@@ -1,0 +1,9 @@
+.venv/
+.deps/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.onnx
+src/*.egg-info/
+config.local.json
+media/test-clips/
