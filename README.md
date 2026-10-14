@@ -15,6 +15,8 @@ Virtual-first prototype for A01–A08 CCTV monitoring. The engineering rules for
 | A07 | Wall climbing | Sustained upward person movement in a wall zone creates a **suspected** alert. An optional `crossing_line_y` requires the person's lower box edge to cross a marked fence-top line. |
 | A08 | Door tampering | A small handle-zone polygon measures sustained local motion while surrounding scene motion stays low. It can report a **suspected** handle-activity alert without a full person detection. It does not establish tampering or intent. |
 
+The local management console now provides distinct `/dashboard`, `/cameras`, `/robots`, `/map`, `/alerts`, and `/algorithm-test` routes. It includes API-key sign-in, camera CRUD, semantic polygon drawing, persistent alert history, an offline interactive 3D residential site model, and queued image/video detector testing. The robot page is an explicit integration-ready empty state; it does not pretend that hardware is connected.
+
 Download the pinned Apache-2.0 model with `scripts/download_yolox.py` before starting real-video detection. Model bytes are excluded from source control. A07/A08 are review signals, not reliable behavior classifiers. A08 can still mistake ordinary handle use for suspicious activity. Alerts must be checked by a human before action.
 
 ## Run locally
@@ -27,14 +29,24 @@ python -m venv .venv
 .\.venv\Scripts\python.exe scripts/download_yolox.py
 $env:SENTINEL_API_KEY='replace-with-a-long-local-secret'
 $env:SENTINEL_CONFIG='config.webcam.example.json'
+# Optional; defaults to data/sentinel-state.json
+$env:SENTINEL_DATA_FILE='data/sentinel-state.json'
 .\.venv\Scripts\python.exe -m sentinel.api
 ```
 
-Open `http://127.0.0.1:8000/`, enter the same API key, click **Connect**, then **Start camera + detection**. The dashboard displays the camera frame, current person/vehicle boxes and confidence, current counts, a list of recent successful detections, and separate safety alerts. Click **Stop camera** to release the webcam. The server does not open the camera until Start is clicked. API documentation is at `/docs`.
+Open `http://127.0.0.1:8000/`. The server redirects to `/login`; enter the same API key to open the dashboard. The key is held in browser `sessionStorage`, is sent as `X-API-Key`, and is cleared by **Sign out**. This is a local shared-secret gate, not user identity or production session management. API documentation is at `/docs`.
 
-To calibrate A05–A08, expand **Edit zones** under the running camera. Select an existing rule or **New zone**, choose its rule, click **Draw**, mark at least three corners on the video, and click **Save**. **Remove** deletes a zone. The authenticated API updates the running camera immediately and writes `config.local.json` when the server was started from an example config. On the next server start, set `SENTINEL_CONFIG=config.local.json` so the saved zones load. Editing an explicitly named private config writes back to that file. Editing zones resets current tracks for that camera; it does not erase prior alerts. Thresholds remain editable in the saved JSON.
+Use **Cameras** to create a camera, then **Open camera** to visit its `/cameras/{camera_id}` detail page. Start/stop, edit, delete, live preview, and zone drawing are on this page, with camera-specific alert history below. Behavior tiles highlight alerts from the last ten seconds only while frames are live. Fire and fall are explicitly marked **Not installed**; no fire/fall classifier is bundled. Camera credentials are never returned by the API; the UI shows only a sanitized source label. To calibrate A05–A08, select **Draw zones**, choose an existing zone or create one, click **Draw new shape**, mark at least three points, choose the area's meaning and detection rule, save the draft, then save all zones. The authenticated API updates the running camera immediately and writes `config.local.json` when the server was started from an example config. On the next server start, set `SENTINEL_CONFIG=config.local.json` so the saved cameras and zones load. Editing an explicitly named private config writes back to that file. Zone changes reset current tracks for that camera; they do not erase prior alerts.
 
-The preview refreshes independently of inference, at up to about seven images per second in the browser. The capture worker retains only the newest frame for detection, so slow CPU inference does not build a backlog. Detection boxes can trail a moving subject because the model updates more slowly than the preview; CPU speed and model choice determine detection latency.
+The **Algorithm test** route accepts JPG, PNG, WEBP, MP4, MOV, AVI, and MKV uploads up to 100 MB. Work runs on a one-job background executor so inference does not block the API event loop. Images produce an annotated JPEG. Videos produce browser-playable VP8/WebM without audio, sample detection at up to roughly five frames per second, and are bounded to the first 60 seconds. Old MP4 results are converted on first viewing; their original files are retained. The installed OpenCV build must support VP8 encoding. Job metadata and outputs are stored under the configured state directory. Tests currently exercise object detection, not the camera-specific zone/temporal behavior rules. Treat these results as review signals, not accuracy certification.
+
+Alerts and algorithm-test metadata are stored atomically in `data/sentinel-state.json` by default; annotated test output is stored in `data/algorithm-results/`. The `data/` directory is ignored by Git. Set `SENTINEL_DATA_FILE` to move state elsewhere. Back up or delete that local directory according to the deployment's retention policy.
+
+The browser preview refreshes independently of inference at up to five frames per second, with only one snapshot request in flight. JPEG production defaults to 5 FPS (`SENTINEL_PREVIEW_FPS`, range 1–15); camera object inference defaults to 2 FPS (`SENTINEL_INFERENCE_FPS`, range 0.5–10). Set these environment variables before starting the server; the browser remains capped at 5 FPS. The capture worker continues draining the source and retains only the newest frame, so slow CPU inference does not build a backlog. Lower rates reduce load but can miss brief actions. Detection boxes can trail moving subjects; CPU speed and model choice determine detection latency.
+
+Terminal logs include timestamped camera start/stop requests, state changes, emitted alerts, and algorithm job progress. `SENTINEL_LOG_LEVEL` defaults to `INFO`. Logs omit camera source credentials and API keys. Restart the server after changing settings or updating code.
+
+The **Residential map** route renders the supplied master-plan layout as a WebGL architectural scene with textured tiled roofs, framed glass windows, porches, cars, landscaping, pool furniture, sunlight, and cast shadows. Locally bundled Three.js 0.180.0 supplies physically based materials, perspective, picking, and orbit controls; no CDN access is needed at runtime. WebGL 2 and browser hardware acceleration are required. Drag to orbit, right-drag to pan, scroll or pinch to zoom, and select a model, label, or directory entry for details. Arrow keys orbit, +/- zoom, and Home resets the view. Scene resources are released when leaving the page. Rendering is demand-driven; there is no continuous water animation. Camera locations and coverage are illustrative planning markers, not GPS positions or calibrated fields of view. Building elevations, dimensions, and materials are interpretations because the supplied image is a plan, not a survey or architectural specification. No site-map data is sent to a third-party service. The rendering decision and replacement boundary are documented in [ADR 004](docs/adr-004-architectural-map.md).
 
 If port 8000 is already in use, set `SENTINEL_PORT=8001` before starting the server and open `http://127.0.0.1:8001/` instead.
 
@@ -60,7 +72,12 @@ All `/api/v1` endpoints require `X-API-Key`. Camera sources are intentionally ab
 
 | Method | Path | Purpose |
 |---|---|---|
+| POST | `/api/v1/session` | Validate an API key for console sign-in |
+| GET | `/api/v1/summary` | Dashboard counts and current overview |
 | GET | `/api/v1/cameras` | Camera IDs, names, source type, and zones |
+| POST | `/api/v1/cameras` | Create and persist a camera |
+| PUT | `/api/v1/cameras/{id}` | Update a camera name or source |
+| DELETE | `/api/v1/cameras/{id}` | Stop and delete a camera configuration |
 | PUT | `/api/v1/cameras/{id}/zones` | Replace and save a camera's calibrated zones |
 | POST | `/api/v1/cameras/{id}/start` | Open camera and start detection |
 | POST | `/api/v1/cameras/{id}/stop` | Stop worker and release camera |
@@ -71,6 +88,10 @@ All `/api/v1` endpoints require `X-API-Key`. Camera sources are intentionally ab
 | GET | `/api/v1/events` | Recent alerts, optionally filtered by `camera_id` |
 | GET | `/api/v1/cameras/{id}/snapshot` | Latest JPEG frame |
 | GET | `/api/v1/cameras/{id}/stream` | MJPEG stream |
+| POST | `/api/v1/algorithm-tests` | Queue raw image/video bytes; requires `X-Filename` |
+| GET | `/api/v1/algorithm-tests` | List locally stored test jobs |
+| GET | `/api/v1/algorithm-tests/{id}` | Read test status and detection summary |
+| GET | `/api/v1/algorithm-tests/{id}/result` | Download the authenticated annotated result |
 
 Example observation (coordinates are normalized 0–1):
 
@@ -82,21 +103,21 @@ Example observation (coordinates are normalized 0–1):
 curl.exe -H "X-API-Key: $env:SENTINEL_API_KEY" http://127.0.0.1:8000/api/v1/cameras
 ```
 
-`at` is Unix time in seconds. Omit it for server time. For virtual testing, provide increasing timestamps per camera. Alerts are held only in memory (most recent 1,000) and vanish on restart. Camera configurations load at startup. This prototype has one shared API key and no per-user or per-site access control; those must be added before a real township deployment.
+`at` is Unix time in seconds. Omit it for server time. For virtual testing, provide increasing timestamps per camera. The most recent 1,000 alerts survive restart through the local JSON state adapter. Camera configurations load at startup. This prototype has one shared API key and no per-user, per-role, or per-site access control; those must be added before a real township deployment.
 
 Behavior-rule migration note: A07 requires at least two upward observations and the configured total rise (`min_vertical_travel`, default `0.12`); the optional `crossing_line_y` further requires a crossing. Video A08 now uses a small door-handle zone and can emit events with null `track_id` and `kind`. External callers of `/observations` can still send person activity sequences under the previous contract. Zone updates reset current tracks and motion state for that camera. The API paths and observation fields remain unchanged.
 
 ## Architecture and testing
 
-`domain.py` defines normalized detections, zones, tracks, and events. `analysis.py` owns rules, `tracking.py` owns track association, `service.py` owns bounded in-memory state, `video.py` adapts OpenCV and the pinned OpenCV Zoo model, and `api.py` exposes the contracts. Camera readers can be replaced without changing rules. No device is required for the unit tests:
+`domain.py` defines normalized detections, zones, tracks, and events. `analysis.py` owns rules, `tracking.py` owns track association, `service.py` owns live state behind an event-store port, `storage.py` supplies atomic JSON adapters, `video.py` adapts OpenCV and the pinned OpenCV Zoo model, `algorithm_test.py` owns bounded background media evaluation, and `api.py` exposes the contracts and routed console. Camera readers and future durable stores can be replaced without changing rules. No device is required for the automated tests:
 
 ```powershell
 $env:PYTHONPATH='src'
-python -m unittest discover -s tests -v
+python -m pytest -q
 ```
 
-The current tracker is a simple centroid matcher. Occlusion, crossing tracks, moving cameras, and perspective changes can cause ID switches or false alerts. Test each real scene, calibrate polygons and dwell time, and replace the tracker or detectors through the existing boundaries if accuracy requires it. A durable event store, tenant-aware authorization, model validation, and operational metrics are future production work.
+The current tracker is a simple centroid matcher. Occlusion, crossing tracks, moving cameras, and perspective changes can cause ID switches or false alerts. Test each real scene, calibrate polygons and dwell time, and replace the tracker or detectors through the existing boundaries if accuracy requires it. JSON persistence is appropriate for this single-process local prototype, but not concurrent multi-process deployment; a transactional durable store, tenant-aware authorization, model validation, and operational metrics remain production work.
 
 The automated tests use deterministic detections and generated frames. They verify wiring and rule behavior, not climbing or tampering accuracy. The local webcam smoke check verifies that capture, JPEG delivery, and one inference pass run; it does not measure recognition quality. A07 and A08 need labeled normal and abnormal footage from the deployment view before their precision and recall can be measured. Until then, treat their alerts as prompts for human review.
 
-The behavior-signal reuse and model decision is recorded in [ADR 001](docs/adr-001-webcam-behavior-signals.md). No new third-party dependency was added for these rules; existing component provenance remains in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+The behavior-signal reuse and model decision is recorded in [ADR 001](docs/adr-001-webcam-behavior-signals.md). The routed console and JSON-state decision is recorded in [ADR 002](docs/adr-002-local-console-and-json-state.md). No new package dependency was added; provenance and the local map implementation note remain in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

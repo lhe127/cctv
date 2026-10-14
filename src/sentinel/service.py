@@ -5,18 +5,34 @@ from collections import deque
 from dataclasses import replace
 from datetime import datetime, timezone
 from threading import RLock
+import logging
+from typing import Callable, Protocol
 from .analysis import CameraAnalyzer
 from .domain import Camera, Detection, DetectionRecord, Event, Track, Zone
+from .tracking import CentroidTracker, Tracker
+
+logger = logging.getLogger("sentinel.monitor")
+
+
+class EventStore(Protocol):
+    """Persistence port kept independent from the JSON adapter."""
+
+    def load_events(self) -> list[Event]: ...
+    def append_events(self, events: list[Event]) -> None: ...
 
 
 class MonitorService:
-    def __init__(self, max_events: int = 1000) -> None:
+    def __init__(self, max_events: int = 1000, event_store: EventStore | None = None,
+                 tracker_factory: Callable[[], Tracker] = CentroidTracker) -> None:
         self._lock = RLock()
+        self._event_store = event_store
+        self._tracker_factory = tracker_factory
         self._cameras: dict[str, Camera] = {}
         self._analyzers: dict[str, CameraAnalyzer] = {}
         self._tracks: dict[str, list[Track]] = {}
         self._seen_track_ids: dict[str, set[int]] = {}
-        self._events: deque[Event] = deque(maxlen=max_events)
+        saved_events = event_store.load_events() if event_store else []
+        self._events: deque[Event] = deque(saved_events[-max_events:], maxlen=max_events)
         self._detections: deque[DetectionRecord] = deque(maxlen=max_events)
         self._frames: dict[str, bytes] = {}
         self._states: dict[str, dict[str, object]] = {}
@@ -26,7 +42,7 @@ class MonitorService:
             if camera.id in self._cameras:
                 raise ValueError(f"duplicate camera id: {camera.id}")
             self._cameras[camera.id] = camera
-            self._analyzers[camera.id] = CameraAnalyzer(camera)
+            self._analyzers[camera.id] = CameraAnalyzer(camera, self._tracker_factory())
             self._tracks[camera.id] = []
             self._seen_track_ids[camera.id] = set()
             self._states[camera.id] = {"state": "stopped", "detector": None, "error": None,
@@ -35,6 +51,31 @@ class MonitorService:
     def cameras(self) -> list[Camera]:
         with self._lock:
             return list(self._cameras.values())
+
+    def update_camera(self, camera_id: str, camera: Camera) -> None:
+        with self._lock:
+            if camera_id not in self._cameras:
+                raise KeyError(camera_id)
+            if camera.id != camera_id:
+                raise ValueError("camera id cannot be changed")
+            self._cameras[camera_id] = camera
+            self._analyzers[camera_id] = CameraAnalyzer(camera, self._tracker_factory())
+            self._tracks[camera_id] = []
+            self._seen_track_ids[camera_id].clear()
+            self._frames.pop(camera_id, None)
+            self._states[camera_id] = {"state": "stopped", "detector": None, "error": None,
+                                       "last_frame_at": None, "last_observation_at": None}
+
+    def remove_camera(self, camera_id: str) -> None:
+        with self._lock:
+            if camera_id not in self._cameras:
+                raise KeyError(camera_id)
+            self._cameras.pop(camera_id)
+            self._analyzers.pop(camera_id)
+            self._tracks.pop(camera_id)
+            self._seen_track_ids.pop(camera_id)
+            self._frames.pop(camera_id, None)
+            self._states.pop(camera_id)
 
     def set_zones(self, camera_id: str, zones: tuple[Zone, ...]) -> None:
         with self._lock:
@@ -45,7 +86,7 @@ class MonitorService:
                 raise ValueError("zone ids must be unique per camera")
             updated = replace(camera, zones=zones)
             self._cameras[camera_id] = updated
-            self._analyzers[camera_id] = CameraAnalyzer(updated)
+            self._analyzers[camera_id] = CameraAnalyzer(updated, self._tracker_factory())
             self._tracks[camera_id] = []
             self._seen_track_ids[camera_id].clear()
             self._states[camera_id]["last_observation_at"] = None
@@ -63,6 +104,10 @@ class MonitorService:
             self._seen_track_ids[camera_id].update(track.id for track in tracks)
             self._tracks[camera_id] = tracks
             self._events.extend(events)
+            for event in events:
+                logger.info("alert camera=%s rule=%s zone=%s", camera_id, event.rule, event.zone_id)
+            if events and self._event_store:
+                self._event_store.append_events(events)
             self._states[camera_id]["last_observation_at"] = datetime.fromtimestamp(at, timezone.utc)
             return tracks, events
 
@@ -73,6 +118,10 @@ class MonitorService:
                 raise KeyError(camera_id)
             events = analyzer.analyze_zone_activity(scores, at)
             self._events.extend(events)
+            for event in events:
+                logger.info("alert camera=%s rule=%s zone=%s", camera_id, event.rule, event.zone_id)
+            if events and self._event_store:
+                self._event_store.append_events(events)
             if scores:
                 self._states[camera_id]["last_observation_at"] = datetime.fromtimestamp(at, timezone.utc)
             return events
@@ -102,6 +151,8 @@ class MonitorService:
             if camera_id not in self._cameras:
                 raise KeyError(camera_id)
             status = self._states[camera_id]
+            if status["state"] != state or status["error"] != error:
+                logger.info("camera=%s state=%s error=%s", camera_id, state, bool(error))
             status.update(state=state, detector=detector, error=error)
 
     def clear_live(self, camera_id: str) -> None:
@@ -111,7 +162,7 @@ class MonitorService:
             self._frames.pop(camera_id, None)
             self._tracks[camera_id] = []
             self._seen_track_ids[camera_id].clear()
-            self._analyzers[camera_id] = CameraAnalyzer(self._cameras[camera_id])
+            self._analyzers[camera_id] = CameraAnalyzer(self._cameras[camera_id], self._tracker_factory())
             self._states[camera_id]["last_frame_at"] = None
             self._states[camera_id]["last_observation_at"] = None
 

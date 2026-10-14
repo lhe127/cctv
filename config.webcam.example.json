@@ -5,10 +5,10 @@
       "name": "Local webcam",
       "source": 0,
       "zones": [
-        {"id": "example-restricted", "rule": "intrusion", "polygon": [[0.02, 0.1], [0.23, 0.1], [0.23, 0.9], [0.02, 0.9]]},
-        {"id": "example-waiting", "rule": "loitering", "polygon": [[0.26, 0.1], [0.48, 0.1], [0.48, 0.9], [0.26, 0.9]], "dwell_seconds": 10},
-        {"id": "example-wall", "rule": "wall_climbing", "polygon": [[0.51, 0.1], [0.73, 0.1], [0.73, 0.9], [0.51, 0.9]], "dwell_seconds": 1, "min_vertical_travel": 0.12, "crossing_line_y": 0.5},
-        {"id": "example-door-handle", "rule": "door_tampering", "polygon": [[0.82, 0.42], [0.9, 0.42], [0.9, 0.54], [0.82, 0.54]], "dwell_seconds": 2, "activity_threshold": 0.7, "min_activity_samples": 3}
+        {"id": "example-restricted", "meaning": "restricted area", "rule": "intrusion", "polygon": [[0.02, 0.1], [0.23, 0.1], [0.23, 0.9], [0.02, 0.9]]},
+        {"id": "example-waiting", "meaning": "waiting area", "rule": "loitering", "polygon": [[0.26, 0.1], [0.48, 0.1], [0.48, 0.9], [0.26, 0.9]], "dwell_seconds": 10},
+        {"id": "example-wall", "meaning": "perimeter", "rule": "wall_climbing", "polygon": [[0.51, 0.1], [0.73, 0.1], [0.73, 0.9], [0.51, 0.9]], "dwell_seconds": 1, "min_vertical_travel": 0.12, "crossing_line_y": 0.5},
+        {"id": "example-door-handle", "meaning": "main door", "rule": "door_tampering", "polygon": [[0.82, 0.42], [0.9, 0.42], [0.9, 0.54], [0.82, 0.54]], "dwell_seconds": 2, "activity_threshold": 0.7, "min_activity_samples": 3}
       ]
     }
   ]

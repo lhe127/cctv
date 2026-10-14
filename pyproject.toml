@@ -10,14 +10,14 @@ requires-python = ">=3.11"
 dependencies = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1"]
 
 [project.optional-dependencies]
-video = ["opencv-python-headless>=4.10,<5", "numpy>=2,<3"]
+video = ["opencv-python>=4.10,<5", "numpy>=2,<3", "supervision==0.27.0"]
 test = ["pytest>=8,<9", "httpx>=0.27,<1"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-sentinel = ["dashboard.html", "vendor/OPENCV_ZOO_YOLOX_LICENSE"]
+sentinel = ["web/*.html", "web/*.css", "web/*.js", "web/*.svg", "web/vendor/*.js", "web/vendor/*.txt", "vendor/OPENCV_ZOO_YOLOX_LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

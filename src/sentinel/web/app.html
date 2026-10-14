@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Township Sentinel management dashboard">
+  <title>Township Sentinel</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css?v=realistic-1">
+  <script type="importmap">{"imports":{"three":"/static/vendor/three.module.min.js"}}</script>
+</head>
+<body class="console-page">
+  <div class="app-shell">
+    <aside id="sidebar" class="sidebar">
+      <a class="brand" href="/dashboard">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M16 3 27 8v7c0 7-4.8 11.7-11 14-6.2-2.3-11-7-11-14V8l11-5Z"/><path d="m10.5 16 3.2 3.2 7.8-8"/></svg></span>
+        <span>Township <strong>Sentinel</strong></span>
+      </a>
+      <nav class="main-nav" aria-label="Main navigation">
+        <span class="nav-label">Workspace</span>
+        <a href="/dashboard" data-route="dashboard"><svg viewBox="0 0 24 24"><path d="M3 11 12 3l9 8"/><path d="M5 10v10h14V10M9 20v-6h6v6"/></svg><span>Home</span></a>
+        <a href="/cameras" data-route="cameras"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="14" height="12" rx="2"/><path d="m17 10 4-2v8l-4-2M7 3h6"/></svg><span>Cameras</span><span id="camera-nav-count" class="nav-count">0</span></a>
+        <a href="/robots" data-route="robots"><svg viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 3v4M8 12h.01M16 12h.01M8 16h8"/></svg><span>Robots</span></a>
+        <a href="/map" data-route="map"><svg viewBox="0 0 24 24"><path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3V6Z"/><path d="M9 3v15M15 6v15"/></svg><span>Residential map</span></a>
+        <a href="/alerts" data-route="alerts"><svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg><span>Alerts</span><span id="alert-nav-count" class="nav-count nav-count-alert">0</span></a>
+        <span class="nav-label nav-label-secondary">Tools</span>
+        <a href="/algorithm-test" data-route="algorithm-test"><svg viewBox="0 0 24 24"><path d="M9 3h6M10 3v5l-5.5 9.5A2.3 2.3 0 0 0 6.5 21h11a2.3 2.3 0 0 0 2-3.5L14 8V3"/><path d="M7 15h10"/></svg><span>Algorithm test</span></a>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="system-chip"><span class="status-dot"></span><span><strong>Local system</strong><small>API connected</small></span></div>
+        <button id="logout" class="nav-logout"><svg viewBox="0 0 24 24"><path d="M10 17l5-5-5-5M15 12H3M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5"/></svg><span>Sign out</span></button>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <button id="menu-toggle" class="icon-button mobile-menu" aria-label="Open navigation"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+        <div class="page-heading"><span id="page-kicker">Operations</span><h1 id="page-title">Dashboard</h1></div>
+        <div class="topbar-actions">
+          <span class="live-chip"><span class="status-dot"></span> Live system</span>
+          <div class="operator"><span class="operator-avatar">OP</span><span><strong>Operator</strong><small>Local access</small></span></div>
+        </div>
+      </header>
+      <main id="page-content" class="page-content" tabindex="-1">
+        <div class="loading-state"><span class="spinner"></span><p>Loading workspace…</p></div>
+      </main>
+    </div>
+  </div>
+  <div id="modal-root"></div>
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+  <script src="/static/residential-map.js?v=realistic-1" defer></script>
+  <script src="/static/app.js?v=realistic-1" defer></script>
+</body>
+</html>

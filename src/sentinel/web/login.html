@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Secure access to the Township Sentinel operations console">
+  <title>Sign in · Township Sentinel</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="login-page">
+  <main class="login-shell">
+    <section class="login-story" aria-label="Product introduction">
+      <a class="brand brand-large" href="/login" aria-label="Township Sentinel home">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32"><path d="M16 3 27 8v7c0 7-4.8 11.7-11 14-6.2-2.3-11-7-11-14V8l11-5Z"/><path d="m10.5 16 3.2 3.2 7.8-8"/></svg>
+        </span>
+        <span>Township <strong>Sentinel</strong></span>
+      </a>
+      <div class="story-copy">
+        <span class="eyebrow"><span class="status-dot"></span> Operations intelligence</span>
+        <h1>One clear view of your township.</h1>
+        <p>Monitor cameras, review safety signals, and test detection workflows from a focused local command center.</p>
+      </div>
+      <div class="story-stats" aria-label="Platform qualities">
+        <div><strong>Local-first</strong><span>Data stays on this machine</span></div>
+        <div><strong>Human-reviewed</strong><span>Signals support decisions</span></div>
+      </div>
+      <div class="radar-art" aria-hidden="true">
+        <span class="radar-ring ring-one"></span><span class="radar-ring ring-two"></span><span class="radar-ring ring-three"></span>
+        <span class="radar-core"></span><span class="radar-sweep"></span>
+      </div>
+    </section>
+
+    <section class="login-panel">
+      <form id="login-form" class="login-card">
+        <input type="text" name="username" value="operator" autocomplete="username" hidden>
+        <div class="mobile-brand">
+          <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M16 3 27 8v7c0 7-4.8 11.7-11 14-6.2-2.3-11-7-11-14V8l11-5Z"/><path d="m10.5 16 3.2 3.2 7.8-8"/></svg></span>
+          <span>Township <strong>Sentinel</strong></span>
+        </div>
+        <span class="eyebrow">Secure console</span>
+        <h2>Welcome back</h2>
+        <p class="subtle">Enter the API key configured on this Sentinel server.</p>
+        <label class="field-label" for="api-key">API key</label>
+        <div class="password-field">
+          <input id="api-key" type="password" autocomplete="current-password" placeholder="Enter your API key" required autofocus>
+          <button id="toggle-key" type="button" class="icon-button" aria-label="Show API key">
+            <svg viewBox="0 0 24 24"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/></svg>
+          </button>
+        </div>
+        <p id="login-error" class="form-error" role="alert" aria-live="polite"></p>
+        <button id="login-button" class="button button-primary button-large" type="submit">
+          <span>Enter dashboard</span><span aria-hidden="true">→</span>
+        </button>
+        <div class="security-note">
+          <svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+          <span>The key is kept only in this browser tab and is cleared when you sign out.</span>
+        </div>
+      </form>
+      <p class="login-footer">Township Sentinel · Local operations console</p>
+    </section>
+  </main>
+  <script src="/static/login.js" defer></script>
+</body>
+</html>

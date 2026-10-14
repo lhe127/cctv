@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import os
+import logging
 from pathlib import Path
 from threading import Event as StopEvent, RLock, Thread
 from time import monotonic, time
@@ -10,6 +12,8 @@ from typing import Callable, Protocol
 from .domain import Camera, Detection, Kind, Rule, Zone
 from .service import MonitorService
 from .vendor.opencv_zoo_yolox import YoloX
+
+logger = logging.getLogger("sentinel.video")
 
 
 class Detector(Protocol):
@@ -102,12 +106,13 @@ class OpenCvZooYoloXDetector:
         result: list[Detection] = []
         for x, y, box_width, box_height, confidence, class_id in predictions:
             class_id = int(class_id)
-            if class_id not in (0, 2, 3, 5, 7):
+            if class_id not in (0, 2, 3, 5, 7, 24, 26, 28):
                 continue
             x1, y1 = max(0.0, float(x) / ratio / width), max(0.0, float(y) / ratio / height)
             x2, y2 = min(1.0, float(x + box_width) / ratio / width), min(1.0, float(y + box_height) / ratio / height)
             if x1 < x2 and y1 < y2:
-                result.append(Detection(Kind.PERSON if class_id == 0 else Kind.VEHICLE,
+                kind = Kind.PERSON if class_id == 0 else Kind.OBJECT if class_id in (24, 26, 28) else Kind.VEHICLE
+                result.append(Detection(kind,
                                         (x1, y1, x2, y2), float(confidence)))
         return result
 
@@ -142,12 +147,12 @@ class YoloOnnxDetector:
         for row in rows:
             cls = int(np.argmax(row[4:]))
             score = float(row[4 + cls])
-            if score < self.threshold or cls not in (0, 2, 3, 5, 7):
+            if score < self.threshold or cls not in (0, 2, 3, 5, 7, 24, 26, 28):
                 continue
             cx, cy, bw, bh = [float(v) for v in row[:4]]
             boxes.append([int(cx - bw / 2), int(cy - bh / 2), int(bw), int(bh)])
             scores.append(score)
-            kinds.append(Kind.PERSON if cls == 0 else Kind.VEHICLE)
+            kinds.append(Kind.PERSON if cls == 0 else Kind.OBJECT if cls in (24, 26, 28) else Kind.VEHICLE)
         result: list[Detection] = []
         for index in cv2.dnn.NMSBoxes(boxes, scores, self.threshold, 0.45):
             x, y, w, h = boxes[int(index)]
@@ -161,6 +166,8 @@ class YoloOnnxDetector:
 class CaptureWorker:
     def __init__(self, camera: Camera, service: MonitorService, detector: Detector, on_error: Callable[[str], None]) -> None:
         self.camera, self.service, self.detector, self.on_error = camera, service, detector, on_error
+        self.preview_fps = max(1, min(15, float(os.getenv("SENTINEL_PREVIEW_FPS", "5"))))
+        self.inference_fps = max(0.5, min(10, float(os.getenv("SENTINEL_INFERENCE_FPS", "2"))))
         self.stop_event = StopEvent()
         self._frame_ready = StopEvent()
         self._frame_lock = RLock()
@@ -224,7 +231,7 @@ class CaptureWorker:
                         if encoded:
                             self.service.set_frame(self.camera.id, jpeg.tobytes())
                             self.service.set_status(self.camera.id, "running", type(self.detector).__name__)
-                        next_preview = now + 0.1  # Limit JPEG work to ten previews per second.
+                        next_preview = now + 1 / self.preview_fps
             except Exception as error:
                 self.on_error(f"camera {self.camera.id}: {error}")
             finally:
@@ -246,9 +253,11 @@ class CaptureWorker:
             if frame is None or self.stop_event.is_set():
                 continue
             try:
+                started = monotonic()
                 detections = self.detector.detect(frame)
                 if not self.stop_event.is_set():
                     self.service.observe(self.camera.id, detections, time(), {}, process_zone_activity=False)
+                self.stop_event.wait(max(0, 1 / self.inference_fps - (monotonic() - started)))
             except Exception as error:
                 self.on_error(f"camera {self.camera.id}: detection failed: {error}")
                 self.stop_event.set()
@@ -271,6 +280,7 @@ class CaptureController:
                 raise KeyError(camera_id)
             if camera.source == "synthetic":
                 raise ValueError("synthetic camera has no video source")
+            logger.info("camera=%s start requested", camera_id)
             if camera_id in self._workers:
                 if self._workers[camera_id].is_alive():
                     return self.service.status(camera_id)
@@ -286,6 +296,7 @@ class CaptureController:
 
     def stop(self, camera_id: str) -> dict[str, object]:
         with self._lock:
+            logger.info("camera=%s stop requested", camera_id)
             self.service.status(camera_id)  # validates id
             worker = self._workers.pop(camera_id, None)
             if worker:

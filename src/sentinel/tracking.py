@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 from math import dist
+from typing import Protocol
 from .domain import Detection, Track
+
+
+class Tracker(Protocol):
+    def update(self, detections: list[Detection], at: float) -> list[Track]: ...
 
 
 class CentroidTracker:
