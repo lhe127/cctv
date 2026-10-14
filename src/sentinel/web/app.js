@@ -13,7 +13,6 @@
   const objectUrls = new Set();
   const timers = new Set();
   let selectedUpload = null;
-  let selectedTestCameraId = '';
   let resultLoadVersion = 0;
   const ruleLabels = {
     intrusion: 'Restricted-area entry', loitering: 'Loitering', wall_climbing: 'Suspected climbing',
@@ -26,7 +25,7 @@
     cameras: ['Monitoring', 'Cameras'],
     robots: ['Automation', 'Robots'],
     map: ['Township', 'Residential map'],
-    alerts: ['Safety review', 'Alerts'],
+    alerts: ['Visual analysis', 'Review findings'],
     'algorithm-test': ['Testing lab', 'Algorithm test'],
   };
 
@@ -132,7 +131,7 @@
     try {
       const summary = await api('/api/v1/summary');
       document.getElementById('camera-nav-count').textContent = summary.camera_count;
-      document.getElementById('alert-nav-count').textContent = summary.alert_count || '';
+      document.getElementById('alert-nav-count').textContent = summary.finding_count || '';
     } catch (error) {
       toast(error.message, 'error');
     }
@@ -154,30 +153,30 @@
 
   async function renderDashboard() {
     const [summary, cameras, events] = await Promise.all([
-      api('/api/v1/summary'), api('/api/v1/cameras'), api('/api/v1/events'),
+      api('/api/v1/summary'), api('/api/v1/cameras'), api('/api/v1/findings'),
     ]);
     const withStates = await getCameraStates(cameras);
     content.innerHTML = `
       <div class="section-head"><div><h2>Good day, Operator</h2><p>Here is the current township operations overview.</p></div><div class="head-actions"><a class="button button-secondary" href="/algorithm-test">${icon('flask')} Run media test</a><a class="button button-primary" href="/cameras">${icon('camera')} Manage cameras</a></div></div>
       <section class="metric-grid">
         ${metric('Cameras online', `${summary.online_count} / ${summary.camera_count}`, 'Configured monitoring sources', 'camera', '#12a886', '#e7f7f3')}
-        ${metric('Open alerts', summary.alert_count, 'Persistent review signals', 'alert', '#d94c5c', '#fff0f2')}
-        ${metric('Detections', summary.detection_count, 'This server session', 'person', '#3976e8', '#edf3ff')}
+        ${metric('Review findings', summary.finding_count, 'Saved visual descriptions', 'alert', '#d94c5c', '#fff0f2')}
+        ${metric('Analysis model', 'SmolVLM2', 'Local video understanding', 'person', '#3976e8', '#edf3ff')}
         ${metric('Media tests', summary.algorithm_test_count, 'Saved local test runs', 'flask', '#9a6ad9', '#f4effb')}
       </section>
       <section class="content-grid">
         <article class="panel"><div class="panel-head"><div><h3>Camera network</h3><p>Live state across configured sources</p></div><a class="link-button" href="/cameras">View all →</a></div><div class="panel-body camera-list">
-          ${withStates.length ? withStates.map(camera => `<div class="camera-row"><span class="camera-thumb">${icon('camera')}</span><span><strong>${escapeHtml(camera.name)}</strong><small>${escapeHtml(camera.source_label)} · ${camera.zones.length} zones</small></span>${statePill(camera.status.state)}</div>`).join('') : '<div class="empty-state"><p>No cameras configured yet.</p><a class="button button-primary" href="/cameras">Add camera</a></div>'}
+          ${withStates.length ? withStates.map(camera => `<div class="camera-row"><span class="camera-thumb">${icon('camera')}</span><span><strong>${escapeHtml(camera.name)}</strong><small>${escapeHtml(camera.source_label)} · SmolVLM2 analysis</small></span>${statePill(camera.status.state)}</div>`).join('') : '<div class="empty-state"><p>No cameras configured yet.</p><a class="button button-primary" href="/cameras">Add camera</a></div>'}
         </div></article>
-        <article class="panel"><div class="panel-head"><div><h3>Recent alerts</h3><p>Newest signals requiring review</p></div><a class="link-button" href="/alerts">Review all →</a></div><div class="panel-body alert-list">
-          ${events.length ? events.slice(0, 6).map(event => `<div class="alert-item"><span class="alert-dot"></span><div><strong>${escapeHtml(titleCase(event.rule))}</strong><p>${escapeHtml(event.message)}</p><time>${escapeHtml(event.camera_id)} · ${formatTime(event.observed_at)}</time></div></div>`).join('') : '<div class="empty-state"><p>No alerts have been recorded.</p></div>'}
+        <article class="panel"><div class="panel-head"><div><h3>Recent findings</h3><p>Visual descriptions requiring review</p></div><a class="link-button" href="/alerts">Review all →</a></div><div class="panel-body alert-list">
+          ${events.length ? events.slice(0, 6).map(event => `<div class="alert-item"><span class="alert-dot"></span><div><strong>${escapeHtml('Visual analysis')}</strong><p>${escapeHtml(event.description)}</p><time>${escapeHtml(event.camera_id)} · ${formatTime(event.observed_at)}</time></div></div>`).join('') : '<div class="empty-state"><p>No visual findings have been recorded.</p></div>'}
         </div></article>
       </section>`;
   }
 
   function cameraCard(camera) {
     return `<article class="camera-card"><div class="camera-card-body">
-      <h3>${escapeHtml(camera.name)}</h3><p>${escapeHtml(camera.source_label)} · ${camera.zones.length} zones</p>
+      <h3>${escapeHtml(camera.name)}</h3><p>${escapeHtml(camera.source_label)} · SmolVLM2 analysis</p>
       ${statePill(camera.status.state)} <a class="button button-primary" href="/cameras/${encodeURIComponent(camera.id)}">Open camera →</a>
     </div></article>`;
   }
@@ -187,8 +186,8 @@
     return `<article class="camera-card" data-camera-card="${escapeHtml(camera.id)}">
       <div class="camera-visual"><span class="camera-placeholder">${icon('camera')}</span><img alt="Live view from ${escapeHtml(camera.name)}" hidden><span class="visual-state">${statePill(camera.status.state)}</span></div>
       <div class="camera-card-body"><div class="camera-title-row"><div><h3>${escapeHtml(camera.name)}</h3><p>${escapeHtml(camera.id)} · ${escapeHtml(camera.source_label)}</p></div><div class="card-menu"><button class="icon-button" data-edit-camera="${escapeHtml(camera.id)}" aria-label="Edit camera">${icon('settings')}</button><button class="icon-button" data-delete-camera="${escapeHtml(camera.id)}" aria-label="Delete camera">${icon('trash')}</button></div></div>
-      <div class="camera-meta"><div><span>People</span><strong>${camera.status.person_count || 0}</strong></div><div><span>Vehicles</span><strong>${camera.status.vehicle_count || 0}</strong></div><div><span>Zones</span><strong>${camera.zones.length}</strong></div></div>
-      <div class="card-actions"><button class="button ${running ? 'button-secondary' : 'button-primary'}" data-camera-action="${running ? 'stop' : 'start'}" data-camera-id="${escapeHtml(camera.id)}" ${camera.source_type === 'synthetic' ? 'disabled title="Synthetic cameras receive API observations"' : ''}>${running ? 'Stop camera' : camera.source_type === 'synthetic' ? 'Virtual input' : 'Start camera'}</button><button class="button button-secondary" data-zones="${escapeHtml(camera.id)}">Draw zones</button></div></div>
+      <div class="camera-meta"><div><span>Model</span><strong>SmolVLM2</strong></div><div><span>Output</span><strong>Review findings</strong></div></div>
+      <div class="card-actions"><button class="button ${running ? 'button-secondary' : 'button-primary'}" data-camera-action="${running ? 'stop' : 'start'}" data-camera-id="${escapeHtml(camera.id)}" ${camera.source_type === 'synthetic' ? 'disabled title="Synthetic cameras receive API observations"' : ''}>${running ? 'Stop camera' : camera.source_type === 'synthetic' ? 'Virtual input' : 'Start camera'}</button></div></div>
     </article>`;
   }
 
@@ -215,7 +214,7 @@
     clearTimers();
     const cameras = await api('/api/v1/cameras');
     const withStates = await getCameraStates(cameras);
-    content.innerHTML = `<div class="section-head"><div><h2>Camera management</h2><p>Create sources, control detection, and define semantic monitoring zones.</p></div><button id="add-camera" class="button button-primary">${icon('plus')} Add camera</button></div>
+    content.innerHTML = `<div class="section-head"><div><h2>Camera management</h2><p>Create sources and review local video analysis.</p></div><button id="add-camera" class="button button-primary">${icon('plus')} Add camera</button></div>
       <section class="camera-grid">${withStates.length ? withStates.map(cameraCard).join('') : `<article class="panel empty-state"><span class="empty-icon">${icon('camera')}</span><h3>No cameras configured</h3><p>Add a webcam, local video, RTSP source, or synthetic input to begin.</p><button class="button button-primary" id="empty-add-camera">Add first camera</button></article>`}</section>`;
 
     content.querySelector('#add-camera')?.addEventListener('click', () => openCameraModal());
@@ -230,13 +229,13 @@
     document.getElementById('page-title').textContent = camera.name;
     document.title = `${camera.name} · Township Sentinel`;
     content.innerHTML = `<div class="section-head"><div><a href="/cameras">← All cameras</a>
-      <h2>${escapeHtml(camera.name)}</h2><p>Live view, camera settings, zones, and alerts.</p></div></div>
+      <h2>${escapeHtml(camera.name)}</h2><p>Live view and timestamped visual analysis.</p></div></div>
       <div class="camera-detail">${detailCard(camera)}</div>
       <p id="camera-health" role="status"></p>
-      <section class="panel"><div class="panel-head"><h3>Behavior signals</h3><p>Recent alerts highlight for 10 seconds. Review before acting.</p></div>
+      <section class="panel"><div class="panel-head"><h3>Visual analysis</h3><p>Sampled descriptions require human review.</p></div>
       <div id="behavior-grid" class="behavior-grid"></div></section>
-      <section class="panel camera-alerts"><div class="panel-head"><h3>Camera alert history</h3></div>
-      <div class="table-wrap"><table class="data-table"><thead><tr><th>Time</th><th>Behavior</th><th>Zone</th><th>Message</th></tr></thead><tbody id="camera-alert-rows"></tbody></table></div></section>`;
+      <section class="panel camera-alerts"><div class="panel-head"><h3>Camera findings</h3></div>
+      <div class="table-wrap"><table class="data-table"><thead><tr><th>Time</th><th>Window</th><th>Frames</th><th>Description</th></tr></thead><tbody id="camera-alert-rows"></tbody></table></div></section>`;
     let state = camera.status;
     let polling = false;
     const mounted = content.querySelector('.camera-detail');
@@ -245,7 +244,7 @@
       polling = true;
       try {
         const [nextState, events, tracks] = await Promise.all([
-          api(base + '/status'), api('/api/v1/events?camera_id=' + encodeURIComponent(detailId)), api(base + '/tracks')
+          api(base + '/status'), api('/api/v1/findings?camera_id=' + encodeURIComponent(detailId)), api(base + '/tracks')
         ]);
         if (!mounted.isConnected) return;
         state = nextState;
@@ -256,20 +255,8 @@
         const action = content.querySelector('[data-camera-action]');
         action.dataset.cameraAction = ['running', 'starting', 'error'].includes(state.state) ? 'stop' : 'start';
         action.textContent = camera.source_type === 'synthetic' ? 'Virtual input' : action.dataset.cameraAction === 'stop' ? 'Stop camera' : 'Start camera';
-        const counts = content.querySelectorAll('.camera-meta strong');
-        counts[0].textContent = live ? state.person_count : 0; counts[1].textContent = live ? state.vehicle_count : 0;
-        const rules = [...Object.entries(ruleLabels), ['fire', 'Fire / smoke'], ['fall', 'Human fall'], ['fighting', 'Fighting'], ['drowning', 'Drowning']];
-        content.querySelector('#behavior-grid').innerHTML = rules.map(([rule, label]) => {
-          const supported = Object.hasOwn(ruleLabels, rule);
-          const configured = camera.zones.some(zone => zone.rule === rule);
-          const recent = live && events.some(item => item.rule === rule && Date.now() - Date.parse(item.observed_at) >= 0 && Date.now() - Date.parse(item.observed_at) < 10000);
-          const message = !supported ? 'Not installed' : !configured ? 'No zone configured' : recent ? 'Recent signal — review' : live ? 'Monitoring' : 'Inactive';
-          return `<article class="behavior-tile ${recent ? 'signal-active' : ''}"><strong>${label}</strong><span>${message}</span></article>`;
-        }).join('');
-        content.querySelector('#camera-alert-rows').innerHTML = events.length ? events.map(item => `<tr><td>${formatTime(item.observed_at)}</td><td>${escapeHtml(titleCase(item.rule))}</td><td>${escapeHtml(item.zone_id)}</td><td>${escapeHtml(item.message)}</td></tr>`).join('') : '<tr><td colspan="4">No alerts for this camera.</td></tr>';
-        let overlay = content.querySelector('.track-overlay');
-        if (!overlay) { overlay = document.createElement('div'); overlay.className = 'track-overlay'; content.querySelector('.camera-visual').append(overlay); }
-        overlay.innerHTML = live ? tracks.map(track => `<div class="track-box" style="left:${track.box[0]*100}%;top:${track.box[1]*100}%;width:${(track.box[2]-track.box[0])*100}%;height:${(track.box[3]-track.box[1])*100}%"><span>${escapeHtml(track.kind)} ${Math.round(track.confidence*100)}%</span></div>`).join('') : '';
+        content.querySelector('#behavior-grid').innerHTML = `<article class="behavior-tile"><strong>${escapeHtml(state.analysis_state || 'Waiting for frames')}</strong><span>${escapeHtml(state.analysis_error || 'Eight frames sampled at 0.5-second intervals per action analysis window. Findings require review; automatic alerts are disabled.')}</span></article>`;
+        content.querySelector('#camera-alert-rows').innerHTML = events.length ? events.map(item => `<tr><td>${formatTime(item.observed_at)}</td><td>${Number(item.start_seconds).toFixed(1)}–${Number(item.end_seconds).toFixed(1)}s</td><td>${Number(item.frames_analyzed)}</td><td>${escapeHtml(item.description)}</td></tr>`).join('') : '<tr><td colspan="4">Waiting for the first analysis result.</td></tr>';
         if (!live) { content.querySelector('.camera-visual img').hidden = true; content.querySelector('.camera-placeholder').hidden = false; }
       } catch (error) {
         if (mounted.isConnected) {
@@ -293,7 +280,6 @@
     const action = event.target.closest('[data-camera-action]');
     const edit = event.target.closest('[data-edit-camera]');
     const remove = event.target.closest('[data-delete-camera]');
-    const zones = event.target.closest('[data-zones]');
     try {
       if (action) {
         action.disabled = true;
@@ -311,9 +297,7 @@
           await api(`/api/v1/cameras/${encodeURIComponent(remove.dataset.deleteCamera)}`, {method: 'DELETE'});
           toast('Camera deleted.'); window.location.assign('/cameras');
         }
-      } else if (zones) {
-        const cameras = await api('/api/v1/cameras');
-        openZoneModal(cameras.find(camera => camera.id === zones.dataset.zones));
+
       }
     } catch (error) { toast(error.message, 'error'); }
     finally { if (action?.isConnected) action.disabled = false; }
@@ -347,150 +331,11 @@
     });
   }
 
-  function openZoneModal(camera, referenceMedia = null) {
-    if (!camera) return;
-    let zones = structuredClone(camera.zones || []);
-    let selected = zones.length ? 0 : -1;
-    let points = selected >= 0 ? structuredClone(zones[selected].polygon) : [];
-    let drawing = false;
-    const meanings = ['restricted area', 'main door', 'entrance / exit', 'perimeter', 'parking area', 'no parking', 'pool danger area', 'gathering area', 'waiting area', 'custom'];
-    const rules = Object.keys(ruleLabels);
-    showModal(`<div class="modal-head"><div><h2>Zones · ${escapeHtml(camera.name)}</h2></div><button class="icon-button" data-close-modal aria-label="Close">×</button></div>
-      <div class="modal-body"><div id="zone-chips" class="zone-list"></div><div class="zone-layout" style="margin-top:14px">
-        <div><div class="zone-stage" id="zone-stage"><img id="zone-frame" alt="Camera scene" hidden><svg id="zone-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="Zone drawing canvas"></svg></div><div class="zone-tools"><button class="button button-secondary" id="draw-zone">Draw new shape</button><button class="button button-ghost" id="undo-point">Undo point</button><button class="button button-ghost" id="clear-points">Clear</button></div></div>
-        <div class="zone-form"><div class="form-field"><label for="zone-id">Zone name</label><input class="input" id="zone-id" placeholder="main-door"></div><div class="form-field"><label for="zone-meaning">Area meaning</label><select class="select" id="zone-meaning">${meanings.map(value => `<option value="${escapeHtml(value)}">${escapeHtml(titleCase(value))}</option>`).join('')}</select></div><div class="form-field"><label for="zone-rule">Detection rule</label><select class="select" id="zone-rule">${rules.map(value => `<option value="${value}">${escapeHtml(titleCase(value))}</option>`).join('')}</select></div><div class="form-grid"><div class="form-field"><label for="zone-dwell">Dwell seconds</label><input class="input" id="zone-dwell" type="number" min="0" step="0.5" value="10"></div><div class="form-field"><label for="zone-cooldown">Cooldown</label><input class="input" id="zone-cooldown" type="number" min="0" step="1" value="30"></div></div><p class="zone-help">Click <strong>Draw new shape</strong>, then place at least three points on the camera view. Choose what the area represents separately from the detection rule.</p><button class="button button-secondary" id="save-zone-local">Save zone draft</button><button class="button button-danger" id="delete-zone" ${selected < 0 ? 'disabled' : ''}>Remove selected zone</button></div>
-      </div></div><div class="modal-actions"><button class="button button-secondary" data-close-modal>Cancel</button><button class="button button-primary" id="persist-zones">Save all zones</button></div>`);
-
-    modalRoot.querySelector('.zone-help').insertAdjacentHTML('beforebegin', `
-      <div class="form-field" id="crowd-setting"><label for="zone-count">Crowd threshold (people)</label><input class="input" id="zone-count" type="number" min="2" max="1000" step="1" value="5"></div>
-      <div class="form-field" id="parking-setting"><label for="zone-stationary">Stationary tolerance (normalized distance)</label><input class="input" id="zone-stationary" type="number" min="0.001" max="0.25" step="0.005" value="0.025"></div>
-      <div class="form-field" id="object-setting"><label for="zone-proximity">Nearby-person radius (normalized)</label><input class="input" id="zone-proximity" type="number" min="0.01" max="1" step="0.01" value="0.15"></div>
-      <p id="rule-help" class="zone-help"></p>`);
-    const svg = modalRoot.querySelector('#zone-svg');
-    const fields = {
-      id: modalRoot.querySelector('#zone-id'), meaning: modalRoot.querySelector('#zone-meaning'),
-      rule: modalRoot.querySelector('#zone-rule'), dwell: modalRoot.querySelector('#zone-dwell'),
-      cooldown: modalRoot.querySelector('#zone-cooldown'),
-      count: modalRoot.querySelector('#zone-count'), stationary: modalRoot.querySelector('#zone-stationary'),
-      proximity: modalRoot.querySelector('#zone-proximity'),
-    };
-
-    function updateRuleFields() {
-      modalRoot.querySelector('#crowd-setting').hidden = fields.rule.value !== 'crowd';
-      modalRoot.querySelector('#parking-setting').hidden = !['illegal_parking', 'unattended_object'].includes(fields.rule.value);
-      modalRoot.querySelector('#object-setting').hidden = fields.rule.value !== 'unattended_object';
-      const hints = {pool_safety: 'Set dwell to 0 for immediate entry alerts. This is not drowning detection.',
-        crowd: 'Alert when the zone continuously contains at least this many people for the dwell duration.',
-        illegal_parking: 'Dwell counts only while a vehicle stays within the tolerance of its stationary origin. Calibrate for this view.',
-        unattended_object: 'Stationary backpack, handbag or suitcase without a detected nearby person. This cannot establish ownership or abandonment.'};
-      modalRoot.querySelector('#rule-help').textContent = hints[fields.rule.value] || 'Duration-based rules need video, not a single picture.';
-    }
-    fields.rule.addEventListener('change', updateRuleFields);
-
-    function zoneDefaults(zone = {}) {
-      return {id: zone.id || '', meaning: zone.meaning || 'custom', rule: zone.rule || 'intrusion', polygon: zone.polygon || [], dwell_seconds: zone.dwell_seconds ?? 10, cooldown_seconds: zone.cooldown_seconds ?? 30, activity_threshold: zone.activity_threshold ?? .7, min_vertical_travel: zone.min_vertical_travel ?? .12, min_activity_samples: zone.min_activity_samples ?? 2, crossing_line_y: zone.crossing_line_y ?? null, min_count: zone.min_count ?? 5, stationary_tolerance: zone.stationary_tolerance ?? .025, proximity_radius: zone.proximity_radius ?? .15};
-    }
-
-    function loadFields() {
-      const zone = selected >= 0 ? zoneDefaults(zones[selected]) : zoneDefaults();
-      fields.id.value = zone.id; fields.meaning.value = meanings.includes(zone.meaning) ? zone.meaning : 'custom'; fields.rule.value = zone.rule; fields.dwell.value = zone.dwell_seconds; fields.cooldown.value = zone.cooldown_seconds;
-      fields.count.value = zone.min_count; fields.stationary.value = zone.stationary_tolerance; fields.proximity.value = zone.proximity_radius; updateRuleFields();
-      modalRoot.querySelector('#delete-zone').disabled = selected < 0;
-    }
-
-    function renderZoneCanvas() {
-      const polygons = zones.map((zone, index) => `<polygon points="${zone.polygon.map(point => `${point[0] * 100},${point[1] * 100}`).join(' ')}" opacity="${index === selected ? 1 : .45}"></polygon><text x="${zone.polygon[0]?.[0] * 100 || 2}" y="${zone.polygon[0]?.[1] * 100 || 5}">${escapeHtml(zone.meaning || zone.id)}</text>`).join('');
-      const draft = points.length ? `<polyline points="${points.map(point => `${point[0] * 100},${point[1] * 100}`).join(' ')}"></polyline>${points.map(point => `<circle cx="${point[0] * 100}" cy="${point[1] * 100}" r="1.05"></circle>`).join('')}` : '';
-      svg.innerHTML = polygons + draft;
-      svg.classList.toggle('drawing', drawing);
-      modalRoot.querySelector('#zone-chips').innerHTML = `<button class="zone-chip ${selected < 0 ? 'active' : ''}" data-zone-index="-1">+ New zone</button>` + zones.map((zone, index) => `<button class="zone-chip ${selected === index ? 'active' : ''}" data-zone-index="${index}">${escapeHtml(zone.meaning || zone.id)}</button>`).join('');
-      modalRoot.querySelectorAll('[data-zone-index]').forEach(button => button.addEventListener('click', () => {
-        selected = Number(button.dataset.zoneIndex); points = selected >= 0 ? structuredClone(zones[selected].polygon) : []; drawing = false; loadFields(); renderZoneCanvas();
-      }));
-    }
-
-    async function loadZoneFrame() {
-      try {
-        if (referenceMedia) {
-          const sourceUrl = rememberUrl(referenceMedia);
-          const media = document.createElement(referenceMedia.type.startsWith('image/') ? 'img' : 'video');
-          media.muted = true; media.preload = 'auto';
-          await new Promise((resolve, reject) => {
-            media.addEventListener(media.tagName === 'IMG' ? 'load' : 'loadeddata', resolve, {once: true});
-            media.addEventListener('error', () => reject(new Error('This file cannot be previewed by the browser. Use a JPG/PNG reference frame or a browser-playable video.')), {once: true});
-            media.src = sourceUrl;
-          });
-          const image = modalRoot.querySelector('#zone-frame');
-          if (!image) return;
-          const canvas = document.createElement('canvas');
-          const width = media.videoWidth || media.naturalWidth, height = media.videoHeight || media.naturalHeight;
-          canvas.width = Math.min(width, 1920); canvas.height = Math.round(canvas.width * height / width);
-          canvas.getContext('2d').drawImage(media, 0, 0, canvas.width, canvas.height);
-          image.onload = () => { image.parentElement.style.aspectRatio = image.naturalWidth + ' / ' + image.naturalHeight; };
-          image.src = canvas.toDataURL('image/jpeg'); image.hidden = false;
-          media.removeAttribute('src'); if (media.tagName === 'VIDEO') media.load();
-          URL.revokeObjectURL(sourceUrl); objectUrls.delete(sourceUrl);
-          return;
-        }
-        const cameraState = await api(`/api/v1/cameras/${encodeURIComponent(camera.id)}/status`);
-        if (cameraState.state !== 'running') return;
-        const response = await request(`/api/v1/cameras/${encodeURIComponent(camera.id)}/snapshot`);
-        const image = modalRoot.querySelector('#zone-frame');
-        if (!image) return;
-        image.onload = () => { image.parentElement.style.aspectRatio = image.naturalWidth + ' / ' + image.naturalHeight; };
-        image.src = rememberUrl(await response.blob()); image.hidden = false;
-      } catch (error) { if (referenceMedia) toast(error.message, 'error'); }
-    }
-
-    modalRoot.querySelector('#draw-zone').addEventListener('click', () => { points = []; drawing = true; renderZoneCanvas(); });
-    modalRoot.querySelector('#undo-point').addEventListener('click', () => { points.pop(); renderZoneCanvas(); });
-    modalRoot.querySelector('#clear-points').addEventListener('click', () => { points = []; renderZoneCanvas(); });
-    svg.addEventListener('pointerdown', event => {
-      if (!drawing) return;
-      const box = svg.getBoundingClientRect();
-      points.push([(event.clientX - box.left) / box.width, (event.clientY - box.top) / box.height]);
-      renderZoneCanvas();
-    });
-
-    function saveDraft() {
-      const id = fields.id.value.trim();
-      if (!id || points.length < 3) throw new Error('Enter a zone name and draw at least three points.');
-      const zone = zoneDefaults(selected >= 0 ? zones[selected] : {});
-      Object.assign(zone, {id, meaning: fields.meaning.value, rule: fields.rule.value, polygon: structuredClone(points), dwell_seconds: Number(fields.dwell.value), cooldown_seconds: Number(fields.cooldown.value), min_count: Number(fields.count.value), stationary_tolerance: Number(fields.stationary.value), proximity_radius: Number(fields.proximity.value)});
-      if (zones.some((item, index) => item.id === id && index !== selected)) throw new Error('Zone names must be unique for this camera.');
-      if (selected >= 0) zones[selected] = zone; else { zones.push(zone); selected = zones.length - 1; }
-      drawing = false; loadFields(); renderZoneCanvas();
-    }
-
-    modalRoot.querySelector('#save-zone-local').addEventListener('click', () => { try { saveDraft(); toast('Zone draft updated.'); } catch (error) { toast(error.message, 'error'); } });
-    modalRoot.querySelector('#delete-zone').addEventListener('click', () => { if (selected < 0) return; zones.splice(selected, 1); selected = zones.length ? Math.min(selected, zones.length - 1) : -1; points = selected >= 0 ? structuredClone(zones[selected].polygon) : []; loadFields(); renderZoneCanvas(); });
-    modalRoot.querySelector('#persist-zones').addEventListener('click', async event => {
-      event.target.disabled = true;
-      try {
-        if (selected >= 0 || drawing || (fields.id.value.trim() || points.length)) saveDraft();
-        await api(`/api/v1/cameras/${encodeURIComponent(camera.id)}/zones`, {method: 'PUT', json: zones});
-        closeModal(); toast('Camera zones saved.');
-        if (route === 'algorithm-test') await renderAlgorithmTest(); else await renderCameras();
-      } catch (error) { toast(error.message, 'error'); event.target.disabled = false; }
-    });
-    loadFields(); renderZoneCanvas(); loadZoneFrame();
-  }
-
   async function renderAlerts() {
-    const [events, cameras] = await Promise.all([api('/api/v1/events'), api('/api/v1/cameras')]);
-    const cameraNames = Object.fromEntries(cameras.map(camera => [camera.id, camera.name]));
-    content.innerHTML = `<div class="section-head"><div><h2>Alert review</h2><p>Persistent safety signals remain available after a server restart.</p></div><div class="toolbar"><input id="alert-search" class="input search-input" type="search" placeholder="Search alerts"><select id="alert-rule" class="select"><option value="">All rules</option><option value="intrusion">Intrusion</option><option value="loitering">Loitering</option><option value="wall_climbing">Wall climbing</option><option value="door_tampering">Door tampering</option></select></div></div><article class="panel"><div class="table-wrap"><table class="data-table"><thead><tr><th>Observed</th><th>Camera</th><th>Zone</th><th>Rule</th><th>Message</th><th>Confidence</th></tr></thead><tbody id="alert-rows"></tbody></table></div></article>`;
-    const rows = content.querySelector('#alert-rows');
-    content.querySelector('#alert-rule').innerHTML = '<option value="">All rules</option>' + Object.entries(ruleLabels).map(([rule, label]) => `<option value="${rule}">${escapeHtml(label)}</option>`).join('');
-    function applyFilters() {
-      const search = content.querySelector('#alert-search').value.toLowerCase();
-      const rule = content.querySelector('#alert-rule').value;
-      const filtered = events.filter(event => (!rule || event.rule === rule) && (!search || JSON.stringify(event).toLowerCase().includes(search)));
-      rows.innerHTML = filtered.length ? filtered.map(event => `<tr><td>${formatTime(event.observed_at)}</td><td><strong>${escapeHtml(cameraNames[event.camera_id] || event.camera_id)}</strong></td><td>${escapeHtml(event.zone_id)}</td><td><span class="rule-pill">${escapeHtml(titleCase(event.rule))}</span></td><td>${escapeHtml(event.message)}</td><td>${Math.round(event.confidence * 100)}%</td></tr>`).join('') : '<tr><td colspan="6"><div class="empty-state"><p>No matching alerts.</p></div></td></tr>';
-    }
-    content.querySelector('#alert-search').addEventListener('input', applyFilters);
-    content.querySelector('#alert-rule').addEventListener('change', applyFilters);
-    applyFilters();
+    const [findings, cameras] = await Promise.all([api('/api/v1/findings'), api('/api/v1/cameras')]);
+    const names = Object.fromEntries(cameras.map(camera => [camera.id, camera.name]));
+    content.innerHTML = `<div class="section-head"><div><h2>Visual review</h2><p>SmolVLM2 descriptions from sampled camera frames. Review the source before acting.</p></div></div>
+      <article class="panel"><div class="table-wrap"><table class="data-table"><thead><tr><th>Observed</th><th>Camera</th><th>Sample window</th><th>Description</th></tr></thead><tbody>${findings.length ? findings.map(item => `<tr><td>${formatTime(item.observed_at)}</td><td>${escapeHtml(names[item.camera_id] || item.camera_id)}</td><td>${Number(item.start_seconds).toFixed(1)}–${Number(item.end_seconds).toFixed(1)}s</td><td>${escapeHtml(item.description)}</td></tr>`).join('') : '<tr><td colspan="4">No visual findings yet. Start a camera to analyze its sampled frames.</td></tr>'}</tbody></table></div></article>`;
   }
 
   async function renderMap() {
@@ -546,7 +391,7 @@
   }
 
   function algorithmHistoryMarkup(tests) {
-    return tests.length ? tests.map(test => `<article class="test-card"><div><h4>${escapeHtml(test.filename)}</h4><p>${formatTime(test.created_at)} · ${test.frames_processed || 0} frames · ${test.events?.length || 0} test alerts</p><p>${escapeHtml(test.camera_name || 'Object detection only')}</p></div><div>${test.state === 'completed' ? `<button class="button button-secondary" data-test-result="${escapeHtml(test.id)}" data-result-type="${escapeHtml(test.output_media_type)}">View result</button>` : statePill(test.state)}${test.error ? `<p class="form-error">${escapeHtml(test.error)}</p>` : ''}</div></article>`).join('') : '<div class="empty-state"><p>No media tests have been run.</p></div>';
+    return tests.length ? tests.map(test => `<article class="test-card"><div><h4>${escapeHtml(test.filename)}</h4><p>${formatTime(test.created_at)} · ${test.frames_processed || 0} frames · ${test.findings?.length || 0} findings</p><p>${escapeHtml(test.camera_name || 'Visual analysis')}</p></div><div>${test.state === 'completed' ? `<button class="button button-secondary" data-test-result="${escapeHtml(test.id)}" data-result-type="${escapeHtml(test.output_media_type)}">View result</button>` : statePill(test.state)}${test.error ? `<p class="form-error">${escapeHtml(test.error)}</p>` : ''}</div></article>`).join('') : '<div class="empty-state"><p>No media tests have been run.</p></div>';
   }
 
   async function loadAlgorithmResult(id, mediaType) {
@@ -564,9 +409,20 @@
       if (previous) { URL.revokeObjectURL(previous); objectUrls.delete(previous); }
       viewer.innerHTML = response.headers.get('Content-Type')?.startsWith('video') ? `<video src="${url}" controls autoplay muted playsinline></video>` : `<img src="${url}" alt="Annotated algorithm test result">`;
       viewer.querySelector('video')?.addEventListener('error', () => toast('Video could not decode. Run the test again to generate a new WebM result.', 'error'));
+        if (metadata.mode === 'visual_analysis') {
+          const findings = metadata.findings || [];
+          const timeline = content.querySelector('#test-timeline');
+          timeline.innerHTML = `<div class="panel-head"><h3>Analysis timeline</h3><p>Descriptions require review</p></div><div class="panel-body">${(metadata.warnings || []).map(item => `<p>${escapeHtml(item)}</p>`).join('')}${findings.map(item => `<article class="test-card"><div><button class="button button-ghost" data-seek="${Number(item.start_seconds)}">${Number(item.start_seconds).toFixed(1)}–${Number(item.end_seconds).toFixed(1)}s</button><p>${escapeHtml(item.description)}</p><small>${Number(item.frames_analyzed)} sampled frames</small></div></article>`).join('')}</div>`;
+          const video = viewer.querySelector('video');
+          timeline.querySelectorAll('[data-seek]').forEach(button => {
+            button.disabled = !video;
+            button.addEventListener('click', () => { video.currentTime = Number(button.dataset.seek); });
+          });
+          return;
+        }
       const events = metadata.events || [];
       const timeline = content.querySelector('#test-timeline');
-      timeline.innerHTML = `<div class="panel-head"><div><h3>Test alert timeline</h3><p>Isolated from live alerts · ${escapeHtml(metadata.camera_name || 'Object detection only')}</p></div></div>
+      timeline.innerHTML = `<div class="panel-head"><div><h3>Test alert timeline</h3><p>Isolated from live alerts · ${escapeHtml(metadata.camera_name || 'Visual analysis')}</p></div></div>
         <div class="panel-body">${(metadata.warnings || []).map(warning => `<p class="zone-help">${escapeHtml(warning)}</p>`).join('')}
         ${metadata.events_truncated ? '<p>Showing the first 1,000 test alerts.</p>' : ''}
         <div class="behavior-grid">${Object.entries(ruleLabels).filter(([rule]) => (metadata.zones || []).some(zone => zone.rule === rule)).map(([rule, label]) => `<article class="behavior-tile" data-replay-rule="${rule}"><strong>${escapeHtml(label)}</strong><span>Test signal</span></article>`).join('')}</div></div>
@@ -595,23 +451,9 @@
 
   async function renderAlgorithmTest() {
     const [tests, cameras, capabilities] = await Promise.all([api('/api/v1/algorithm-tests'), api('/api/v1/cameras'), api('/api/v1/capabilities')]);
-    content.innerHTML = `<div class="section-head"><div><h2>Algorithm test lab</h2><p>Run the production detector on recorded evidence before trying a scenario at a real camera.</p></div><span class="state-pill">Images + videos</span></div><section class="test-layout"><div><div id="upload-zone" class="upload-zone"><span class="upload-icon">${icon('upload')}</span><h3>Drop a picture or video here</h3><p>JPG, PNG, WEBP, MP4, MOV, AVI, or MKV. Videos are bounded to the first 60 seconds.</p><input id="media-file" type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/x-msvideo,video/x-matroska" hidden><button id="choose-file" class="button button-secondary">Choose media</button><div id="selected-file" class="selected-file"></div></div><button id="run-test" class="button button-primary" style="width:100%;margin-top:12px" disabled>Run algorithm test</button></div><article class="panel"><div class="panel-head"><div><h3>Result viewer</h3><p>Annotated output from the same detector adapter</p></div></div><div class="panel-body"><div id="result-viewer" class="result-viewer"><p>Select a completed test to inspect its output.</p></div></div></article></section><article class="panel" style="margin-top:20px"><div class="panel-head"><div><h3>Test history</h3><p>Stored locally with result metadata</p></div></div><div id="test-history" class="panel-body test-history">${algorithmHistoryMarkup(tests)}</div></article>`;
+    content.innerHTML = `<div class="section-head"><div><h2>Algorithm test lab</h2><p>Analyze images and recorded video with the same local SmolVLM2 model used by cameras.</p></div><span class="state-pill">Images + videos</span></div><section class="test-layout"><div><div id="upload-zone" class="upload-zone"><span class="upload-icon">${icon('upload')}</span><h3>Drop a picture or video here</h3><p>JPG, PNG, WEBP, MP4, MOV, AVI, or MKV. Videos are bounded to the first 60 seconds.</p><input id="media-file" type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/x-msvideo,video/x-matroska" hidden><button id="choose-file" class="button button-secondary">Choose media</button><div id="selected-file" class="selected-file"></div></div><button id="run-test" class="button button-primary" style="width:100%;margin-top:12px" disabled>Run algorithm test</button></div><article class="panel"><div class="panel-head"><div><h3>Result viewer</h3><p>Source playback with an analysis timeline</p></div></div><div class="panel-body"><div id="result-viewer" class="result-viewer"><p>Select a completed test to inspect its output.</p></div></div></article></section><article class="panel" style="margin-top:20px"><div class="panel-head"><div><h3>Test history</h3><p>Stored locally with result metadata</p></div></div><div id="test-history" class="panel-body test-history">${algorithmHistoryMarkup(tests)}</div></article>`;
     const zone = content.querySelector('#upload-zone');
-    zone.insertAdjacentHTML('beforebegin', `<div class="panel-body test-configuration"><div class="form-field"><label for="test-camera">Analysis configuration</label><select class="select" id="test-camera"><option value="">Object detection only</option>${cameras.map(camera => `<option value="${escapeHtml(camera.id)}">${escapeHtml(camera.name)} · ${camera.zones.length} zones</option>`).join('')}</select></div><p id="test-config-help" class="zone-help"></p><p class="zone-help">Test alerts never enter live alert history. A still image cannot test duration or movement. Video analysis: up to ${capabilities.inference_fps} FPS, same rules as live cameras.</p></div>`);
     content.querySelector('.test-layout').insertAdjacentHTML('afterend', '<section class="panel" id="test-timeline" style="margin-top:20px"></section>');
-    content.insertAdjacentHTML('beforeend', `<details class="panel capability-list" style="margin-top:20px"><summary class="panel-head">A01–A16 capability status · ${escapeHtml(capabilities.tracker)} tracking</summary><div class="table-wrap"><table class="data-table"><thead><tr><th>ID</th><th>Capability</th><th>Status</th><th>Scope</th></tr></thead><tbody>${capabilities.items.map(item => `<tr><td>${item.id}</td><td>${escapeHtml(item.name)}</td><td>${escapeHtml(titleCase(item.status))}</td><td>${escapeHtml(item.note)}</td></tr>`).join('')}</tbody></table></div></details>`);
-    const cameraSelect = content.querySelector('#test-camera');
-    cameraSelect.value = selectedTestCameraId;
-    cameraSelect.insertAdjacentHTML('afterend', '<button id="test-edit-zones" class="button button-secondary" style="margin-top:10px">Edit selected camera zones</button>');
-    const editZones = content.querySelector('#test-edit-zones');
-    editZones.addEventListener('click', () => openZoneModal(cameras.find(item => item.id === cameraSelect.value), selectedUpload));
-    const updateConfiguration = () => {
-      selectedTestCameraId = cameraSelect.value;
-      const camera = cameras.find(item => item.id === cameraSelect.value);
-      editZones.disabled = !camera;
-      content.querySelector('#test-config-help').textContent = camera ? `${camera.zones.map(item => ruleLabels[item.rule] || item.rule).join(', ') || 'No zones configured.'} Zones must match the uploaded viewpoint; edit them on the camera detail page.` : 'Select a camera to replay its saved zone rules, or leave object detection only selected.';
-    };
-    cameraSelect.addEventListener('change', updateConfiguration); updateConfiguration();
     const input = content.querySelector('#media-file');
     const run = content.querySelector('#run-test');
     const choose = content.querySelector('#choose-file');
@@ -628,7 +470,7 @@
       if (!selectedUpload) return;
       run.disabled = true; run.textContent = 'Uploading…';
       try {
-        await api('/api/v1/algorithm-tests' + (cameraSelect.value ? '?camera_id=' + encodeURIComponent(cameraSelect.value) : ''), {method: 'POST', body: selectedUpload, headers: {'Content-Type': selectedUpload.type || 'application/octet-stream', 'X-Filename': selectedUpload.name.replace(/[^a-zA-Z0-9._-]/g, '_')}});
+        await api('/api/v1/analysis-jobs', {method: 'POST', body: selectedUpload, headers: {'Content-Type': selectedUpload.type || 'application/octet-stream', 'X-Filename': selectedUpload.name.replace(/[^a-zA-Z0-9._-]/g, '_')}});
         toast('Test queued. Processing continues in the background.'); select(null); run.textContent = 'Run algorithm test';
         await refreshAlgorithmHistory();
       } catch (error) { toast(error.message, 'error'); run.disabled = false; run.textContent = 'Run algorithm test'; }

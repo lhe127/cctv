@@ -9,6 +9,7 @@ import numpy as np
 
 from sentinel.domain import Camera, Detection, Kind, Rule, Zone
 from sentinel.service import MonitorService
+from sentinel.vision import VisualFinding
 from sentinel.video import CaptureWorker, FrameActivityEstimator
 
 
@@ -33,10 +34,10 @@ class SlowDetector:
     def __init__(self):
         self.frames = []
 
-    def detect(self, frame):
+    def analyze(self, frames):
         time.sleep(0.18)
-        self.frames.append(frame)
-        return []
+        self.frames.extend(frames)
+        return VisualFinding("Visible scene", "fixture", "test", frames[0].offset_seconds, frames[-1].offset_seconds, len(frames))
 
 
 class FiniteCapture(FakeCapture):
@@ -129,6 +130,7 @@ class CaptureWorkerTests(unittest.TestCase):
             started = time.monotonic()
             worker.start()
             worker.capture_thread.join(timeout=2)
+            worker.detect_thread.join(timeout=2)
             elapsed = time.monotonic() - started
             worker.stop()
         self.assertFalse(worker.is_alive())
@@ -137,7 +139,7 @@ class CaptureWorkerTests(unittest.TestCase):
         self.assertGreaterEqual(elapsed, 0.25)
         self.assertEqual(service.status("clip")["state"], "finished")
 
-    def test_door_motion_does_not_wait_for_person_inference(self):
+    def test_legacy_door_motion_no_longer_triggers_alerts(self):
         zone = Zone("handle", Rule.DOOR_TAMPERING,
                     ((0.4, 0.4), (0.6, 0.4), (0.6, 0.6), (0.4, 0.6)),
                     dwell_seconds=0.5, min_activity_samples=2)
@@ -150,7 +152,7 @@ class CaptureWorkerTests(unittest.TestCase):
             worker.start()
             try:
                 time.sleep(1.3)
-                self.assertTrue(any(event.rule == Rule.DOOR_TAMPERING for event in service.events("door")))
+                self.assertEqual(service.events("door"), [])
             finally:
                 worker.stop()
 

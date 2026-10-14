@@ -1,9 +1,8 @@
-"""Background image/video evaluation using the same detector contract as cameras."""
+"""Background image/video evaluation using the same visual-analysis contract as cameras."""
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from dataclasses import asdict
 from pathlib import Path
 from threading import Event as StopEvent, RLock
 from typing import Callable
@@ -12,9 +11,9 @@ import logging
 
 from .domain import Camera
 from .storage import JsonStateStore
-from .video import Detector
-from .replay import ReplaySession
-from .tracking import CentroidTracker, Tracker
+from .vision import VisionAnalyzer
+from .vision_session import VisionSession
+from .webm import WebMWriter
 
 
 SUPPORTED_IMAGES = {".jpg", ".jpeg", ".png", ".webp"}
@@ -25,10 +24,9 @@ logger = logging.getLogger("sentinel.algorithm")
 class AlgorithmTestRunner:
     """Runs one bounded media test at a time outside the API event loop."""
 
-    def __init__(self, detector_factory: Callable[[], Detector], store: JsonStateStore, output_dir: Path,
-                 tracker_factory: Callable[[], Tracker] = CentroidTracker, inference_fps: float = 2) -> None:
-        self.detector_factory = detector_factory
-        self.tracker_factory = tracker_factory
+    def __init__(self, analyzer_factory: Callable[[], VisionAnalyzer], store: JsonStateStore, output_dir: Path,
+                 inference_fps: float = 0.5) -> None:
+        self.analyzer_factory = analyzer_factory
         self.inference_fps = inference_fps
         self._pending = 0
         self._inputs: dict[str, Path] = {}
@@ -64,14 +62,15 @@ class AlgorithmTestRunner:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "detections": [],
             "frames_processed": 0,
-            "mode": "camera_rules" if camera else "object_detection",
+            "mode": "visual_analysis",
+            "findings": [],
             "camera_id": camera.id if camera else None,
             "camera_name": camera.name if camera else None,
-            "zones": [asdict(zone) for zone in camera.zones] if camera else [],
+            "zones": [],
             "events": [],
             "inference_fps": self.inference_fps,
             "warnings": (["A still image cannot validate motion or duration-based behavior."] if suffix in SUPPORTED_IMAGES else [])
-                        + (["Zones must match the uploaded media viewpoint."] if camera else []),
+                        + ["Model descriptions require review. Tracking and automatic behavior alerts are disabled."],
         }
         with self._lock:
             if self._closed or self._pending >= 4:
@@ -129,9 +128,7 @@ class AlgorithmTestRunner:
             if not capture.isOpened() or not 0 < fps <= 240:
                 raise RuntimeError("Cannot read legacy result; please run the test again")
             size = (int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)))
-            writer = cv2.VideoWriter(str(temporary), cv2.VideoWriter_fourcc(*"VP80"), fps, size)
-            if not writer.isOpened():
-                raise RuntimeError("WebM encoder unavailable")
+            writer = WebMWriter(temporary, fps, size)
             count = 0
             while count < fps * 60:
                 if self._stop.is_set():
@@ -182,13 +179,13 @@ class AlgorithmTestRunner:
             self._save(record, state="running", started_at=datetime.now(timezone.utc).isoformat())
             if self._stop.is_set():
                 raise RuntimeError("test cancelled during server shutdown")
-            detector = self.detector_factory()
-            session = ReplaySession(camera or Camera("test", "Object detection", "synthetic"), detector, self.tracker_factory())
+            analyzer = self.analyzer_factory()
+            session = VisionSession(analyzer, self._stop)
             if suffix in SUPPORTED_IMAGES:
-                output_path, detections, frames = self._process_image(detector, input_path, record["id"], session)
+                output_path, detections, frames = self._process_image(analyzer, input_path, record["id"], session)
                 output_type = "image/jpeg"
             else:
-                output_path, detections, frames = self._process_video(detector, input_path, record["id"], session)
+                output_path, detections, frames = self._process_video(analyzer, input_path, record["id"], session)
                 output_type = "video/webm"
             self._save(
                 record,
@@ -197,7 +194,8 @@ class AlgorithmTestRunner:
                 frames_processed=frames,
                 events=session.events,
                 events_truncated=session.events_truncated,
-                tracker=type(session.analyzer.tracker).__name__,
+                tracker=None,
+                findings=session.findings,
                 output_path=str(output_path.resolve()),
                 output_media_type=output_type,
                 completed_at=datetime.now(timezone.utc).isoformat(),
@@ -213,8 +211,8 @@ class AlgorithmTestRunner:
                 self._inputs.pop(record["id"], None)
                 self._pending -= 1
 
-    def _process_image(self, detector: Detector, input_path: Path, job_id: str,
-                       session: ReplaySession | None = None) -> tuple[Path, list[dict], int]:
+    def _process_image(self, analyzer: VisionAnalyzer, input_path: Path, job_id: str,
+                       session: VisionSession | None = None) -> tuple[Path, list[dict], int]:
         import cv2
         import numpy as np
 
@@ -223,8 +221,9 @@ class AlgorithmTestRunner:
             raise ValueError("could not decode image")
         if frame.shape[0] * frame.shape[1] > 3840 * 2160:
             raise ValueError("image must have no more than 4K pixels")
-        session = session or ReplaySession(Camera("test", "Object detection", "synthetic"), detector, self.tracker_factory())
+        session = session or VisionSession(analyzer, self._stop)
         session.process(frame, 0, detect=True, activity=True)
+        session.flush()
         session.draw(frame, 0)
         output_path = self.output_dir / f"{job_id}.jpg"
         ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 88])
@@ -233,8 +232,8 @@ class AlgorithmTestRunner:
         output_path.write_bytes(encoded.tobytes())
         return output_path, list(session.peak.values()), 1
 
-    def _process_video(self, detector: Detector, input_path: Path, job_id: str,
-                       session: ReplaySession | None = None) -> tuple[Path, list[dict], int]:
+    def _process_video(self, analyzer: VisionAnalyzer, input_path: Path, job_id: str,
+                       session: VisionSession | None = None) -> tuple[Path, list[dict], int]:
         import cv2
 
         capture = cv2.VideoCapture(str(input_path))
@@ -248,11 +247,12 @@ class AlgorithmTestRunner:
             capture.release()
             raise ValueError("video must have valid dimensions and no more than 4K pixels")
         output_path = self.output_dir / f"{job_id}.webm"
-        writer = cv2.VideoWriter(str(output_path), cv2.VideoWriter_fourcc(*"VP80"), fps, (width, height))
-        if not writer.isOpened():
+        try:
+            writer = WebMWriter(output_path, fps, (width, height))
+        except Exception:
             capture.release()
-            raise RuntimeError("WebM result encoder is unavailable")
-        session = session or ReplaySession(Camera("test", "Object detection", "synthetic"), detector, self.tracker_factory())
+            raise
+        session = session or VisionSession(analyzer, self._stop)
         next_detection = next_activity = 0.0
         max_frames = round(fps * 60)
         frame_count = 0
@@ -279,5 +279,6 @@ class AlgorithmTestRunner:
         if frame_count == 0:
             output_path.unlink(missing_ok=True)
             raise ValueError("video contains no readable frames")
+        session.flush()
         return output_path, list(session.peak.values()), frame_count
 

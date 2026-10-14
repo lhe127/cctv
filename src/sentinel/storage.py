@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from threading import RLock
 from typing import Any
+from uuid import uuid4
 
 from .domain import Camera, Event, Kind, Rule, Zone
 
@@ -91,7 +93,18 @@ class JsonStateStore:
     def _read(self) -> dict[str, Any]:
         if not self.path.exists():
             return {"version": 1, "events": [], "algorithm_tests": []}
-        value = json.loads(self.path.read_text(encoding="utf-8"))
+        try:
+            value = json.loads(self.path.read_text(encoding="utf-8-sig"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            # Preserve the exact damaged bytes before starting a fresh history.
+            # Permission/I/O errors and unsupported versions must still fail.
+            backup = self.path.with_name(f"{self.path.name}.corrupt-{uuid4().hex}")
+            self.path.rename(backup)
+            logging.getLogger("sentinel.storage").warning(
+                "Invalid state preserved at %s; starting empty history", backup
+            )
+            value = {"version": 1, "events": [], "algorithm_tests": [], "findings": []}
+            self._write(value)
         if not isinstance(value, dict) or value.get("version") != 1:
             raise ValueError(f"unsupported state file: {self.path}")
         value.setdefault("events", [])
@@ -102,7 +115,10 @@ class JsonStateStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         try:
-            temporary.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            with temporary.open("w", encoding="utf-8") as stream:
+                stream.write(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
             os.replace(temporary, self.path)
         except OSError:
             temporary.unlink(missing_ok=True)
@@ -141,6 +157,16 @@ class JsonStateStore:
     def list_algorithm_tests(self) -> list[dict[str, Any]]:
         with self._lock:
             return list(reversed(self._read()["algorithm_tests"]))
+
+    def load_findings(self) -> list[dict]:
+        with self._lock:
+            return self._read().get("findings", [])[-self.max_events:]
+
+    def append_finding(self, finding: dict) -> None:
+        with self._lock:
+            value = self._read()
+            value["findings"] = (value.get("findings", []) + [finding])[-self.max_events:]
+            self._write(value)
 
     def put_algorithm_test(self, record: dict[str, Any]) -> None:
         with self._lock:

@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from threading import RLock
 import logging
 from typing import Callable, Protocol
+from uuid import uuid4
+from .vision import VisualFinding
 from .analysis import CameraAnalyzer
 from .domain import Camera, Detection, DetectionRecord, Event, Track, Zone
 from .tracking import CentroidTracker, Tracker
@@ -21,11 +23,19 @@ class EventStore(Protocol):
     def append_events(self, events: list[Event]) -> None: ...
 
 
+class FindingStore(Protocol):
+    def load_findings(self) -> list[dict]: ...
+    def append_finding(self, finding: dict) -> None: ...
+
+
 class MonitorService:
     def __init__(self, max_events: int = 1000, event_store: EventStore | None = None,
-                 tracker_factory: Callable[[], Tracker] = CentroidTracker) -> None:
+                 tracker_factory: Callable[[], Tracker] = CentroidTracker,
+                 finding_store: FindingStore | None = None) -> None:
         self._lock = RLock()
         self._event_store = event_store
+        self._finding_store = finding_store
+        self._findings: deque[dict] = deque(finding_store.load_findings() if finding_store else [], maxlen=max_events)
         self._tracker_factory = tracker_factory
         self._cameras: dict[str, Camera] = {}
         self._analyzers: dict[str, CameraAnalyzer] = {}
@@ -51,6 +61,28 @@ class MonitorService:
     def cameras(self) -> list[Camera]:
         with self._lock:
             return list(self._cameras.values())
+
+    def set_analysis_status(self, camera_id: str, state: str, error: str | None = None) -> None:
+        with self._lock:
+            self._states[camera_id].update(analysis_state=state, analysis_error=error)
+
+    def record_finding(self, camera_id: str, finding: VisualFinding) -> None:
+        with self._lock:
+            if camera_id not in self._cameras:
+                raise KeyError(camera_id)
+            observed_at = datetime.now(timezone.utc).isoformat()
+            item = {**finding.public(), "id": str(uuid4()), "camera_id": camera_id,
+                    "observed_at": observed_at}
+            if self._finding_store:
+                self._finding_store.append_finding(item)
+            self._findings.append(item)
+            self._states[camera_id].update(analysis_state="ready", analysis_error=None,
+                                          last_observation_at=observed_at)
+
+    def findings(self, camera_id: str | None = None) -> list[dict]:
+        with self._lock:
+            return [dict(item) for item in reversed(self._findings)
+                    if camera_id is None or item["camera_id"] == camera_id]
 
     def update_camera(self, camera_id: str, camera: Camera) -> None:
         with self._lock:
@@ -90,6 +122,7 @@ class MonitorService:
             self._tracks[camera_id] = []
             self._seen_track_ids[camera_id].clear()
             self._states[camera_id]["last_observation_at"] = None
+
 
     def observe(self, camera_id: str, detections: list[Detection], at: float,
                 zone_activity: dict[str, float] | None = None,
@@ -165,6 +198,7 @@ class MonitorService:
             self._analyzers[camera_id] = CameraAnalyzer(self._cameras[camera_id], self._tracker_factory())
             self._states[camera_id]["last_frame_at"] = None
             self._states[camera_id]["last_observation_at"] = None
+            self._states[camera_id].update(analysis_state="inactive", analysis_error=None)
 
     def set_frame(self, camera_id: str, jpeg: bytes) -> None:
         with self._lock:

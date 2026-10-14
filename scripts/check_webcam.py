@@ -1,4 +1,4 @@
-"""Bounded webcam-to-API smoke check. Reads frames in memory; saves nothing."""
+"""Bounded webcam-to-API smoke check. Reads frames in memory and saves resulting review findings."""
 import asyncio
 import os
 
@@ -16,7 +16,7 @@ async def main() -> None:
             started = await client.post("/api/v1/cameras/webcam-0/start", headers=headers)
             started.raise_for_status()
             try:
-                for _ in range(60):
+                for _ in range(480):
                     response = await client.get("/api/v1/cameras/webcam-0/snapshot", headers=headers)
                     if response.status_code == 200:
                         if response.headers.get("content-type") != "image/jpeg" or not response.content.startswith(b"\xff\xd8"):
@@ -25,12 +25,12 @@ async def main() -> None:
                         if state["state"] == "error":
                             raise RuntimeError(state["error"])
                         if state["last_observation_at"] is not None:
-                            detections = (await client.get("/api/v1/detections", headers=headers)).json()
+                            detections = (await client.get("/api/v1/findings", headers=headers)).json()
                             print(f"Webcam-to-API check passed: {len(response.content)} JPEG bytes; "
-                                  f"detector={state['detector']}; detections={len(detections)}")
+                                  f"detector={state['detector']}; findings={len(detections)}")
                             return
                     await asyncio.sleep(0.25)
-                raise RuntimeError("webcam snapshot or detector observation unavailable after 15 seconds")
+                raise RuntimeError("webcam snapshot or detector observation unavailable after 120 seconds")
             finally:
                 stopped = await client.post("/api/v1/cameras/webcam-0/stop", headers=headers)
                 stopped.raise_for_status()

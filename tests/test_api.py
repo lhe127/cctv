@@ -47,16 +47,15 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await client.post("/api/v1/cameras/gate-1/start", headers=headers)).status_code, 422)
                 response = await client.post("/api/v1/cameras/gate-1/observations", headers=headers,
                     json={"detections": [{"kind": "person", "box": [0.2, 0.3, 0.3, 0.65], "confidence": 0.9}]})
-                self.assertEqual(response.status_code, 200, response.text)
-                self.assertEqual(len(response.json()["events"]), 1)
-                self.assertEqual(len((await client.get("/api/v1/events", headers=headers)).json()), 1)
+                self.assertEqual(response.status_code, 410, response.text)
+                self.assertEqual(len((await client.get("/api/v1/events", headers=headers)).json()), 0)
                 self.assertEqual((await client.get("/api/v1/events?camera_id=gate-2", headers=headers)).json(), [])
-                self.assertEqual(len((await client.get("/api/v1/detections", headers=headers)).json()), 1)
+                self.assertEqual(len((await client.get("/api/v1/detections", headers=headers)).json()), 0)
                 self.assertEqual((await client.get("/api/v1/cameras/gate-1/snapshot", headers=headers)).status_code, 503)
                 self.assertEqual((await client.get("/api/v1/cameras/missing/tracks", headers=headers)).status_code, 404)
 
             reloaded = create_app("config.example.json", "test-key", str(Path(directory) / "state.json"))
-            self.assertEqual(len(reloaded.state.service.events()), 1)
+            self.assertEqual(len(reloaded.state.service.events()), 0)
 
     async def test_routed_pages_login_and_camera_crud(self):
         with tempfile.TemporaryDirectory(dir=".") as directory:

@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.onnx
+models/smolvlm2-500m/
 src/*.egg-info/
 config.local.json
 media/test-clips/

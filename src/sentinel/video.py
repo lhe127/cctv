@@ -1,4 +1,4 @@
-"""Optional OpenCV video and ONNX detector adapters."""
+"""OpenCV capture and bounded local visual analysis."""
 from __future__ import annotations
 
 from dataclasses import replace
@@ -11,7 +11,8 @@ from typing import Callable, Protocol
 
 from .domain import Camera, Detection, Kind, Rule, Zone
 from .service import MonitorService
-from .vendor.opencv_zoo_yolox import YoloX
+from collections import deque
+from .vision import ANALYSIS_WINDOW_FRAMES, SAMPLE_INTERVAL_SECONDS, ModelBusy, VisionAnalyzer, sample_frame
 
 logger = logging.getLogger("sentinel.video")
 
@@ -86,95 +87,18 @@ class EmptyDetector:
         return []
 
 
-class OpenCvZooYoloXDetector:
-    """Adapter for the pinned Apache-2.0 OpenCV Zoo YOLOX-S COCO model."""
-
-    def __init__(self, model_path: str, threshold: float = 0.45) -> None:
-        import cv2
-        self.cv2 = cv2
-        self.net = YoloX(model_path, confThreshold=threshold, objThreshold=threshold)
-
-    def detect(self, frame: object) -> list[Detection]:
-        import numpy as np
-        cv2 = self.cv2
-        height, width = frame.shape[:2]
-        ratio = min(640 / width, 640 / height)
-        resized = cv2.resize(frame, (round(width * ratio), round(height * ratio)))
-        padded = np.full((640, 640, 3), 114, dtype=np.float32)
-        padded[:resized.shape[0], :resized.shape[1]] = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-        predictions = self.net.infer(padded)
-        result: list[Detection] = []
-        for x, y, box_width, box_height, confidence, class_id in predictions:
-            class_id = int(class_id)
-            if class_id not in (0, 2, 3, 5, 7, 24, 26, 28):
-                continue
-            x1, y1 = max(0.0, float(x) / ratio / width), max(0.0, float(y) / ratio / height)
-            x2, y2 = min(1.0, float(x + box_width) / ratio / width), min(1.0, float(y + box_height) / ratio / height)
-            if x1 < x2 and y1 < y2:
-                kind = Kind.PERSON if class_id == 0 else Kind.OBJECT if class_id in (24, 26, 28) else Kind.VEHICLE
-                result.append(Detection(kind,
-                                        (x1, y1, x2, y2), float(confidence)))
-        return result
-
-
-class YoloOnnxDetector:
-    """Adapter for a user supplied COCO YOLOv8-style ONNX model; no weights bundled."""
-
-    def __init__(self, model_path: str, threshold: float = 0.4) -> None:
-        import cv2
-        self.cv2 = cv2
-        self.net = cv2.dnn.readNetFromONNX(model_path)
-        self.threshold = threshold
-
-    def detect(self, frame: object) -> list[Detection]:
-        import numpy as np
-        cv2 = self.cv2
-        size = 640
-        resized = cv2.resize(frame, (size, size))
-        blob = cv2.dnn.blobFromImage(resized, scalefactor=1 / 255.0, size=(size, size), swapRB=True)
-        self.net.setInput(blob)
-        output = self.net.forward()
-        rows = np.squeeze(output)
-        if rows.ndim != 2:
-            raise ValueError("expected YOLOv8 output matrix")
-        if rows.shape[0] == 84:  # 4 coordinates + 80 COCO classes
-            rows = rows.T
-        if rows.shape[1] != 84:
-            raise ValueError("expected COCO YOLOv8 output with 84 columns")
-        boxes: list[list[int]] = []
-        scores: list[float] = []
-        kinds: list[Kind] = []
-        for row in rows:
-            cls = int(np.argmax(row[4:]))
-            score = float(row[4 + cls])
-            if score < self.threshold or cls not in (0, 2, 3, 5, 7, 24, 26, 28):
-                continue
-            cx, cy, bw, bh = [float(v) for v in row[:4]]
-            boxes.append([int(cx - bw / 2), int(cy - bh / 2), int(bw), int(bh)])
-            scores.append(score)
-            kinds.append(Kind.PERSON if cls == 0 else Kind.OBJECT if cls in (24, 26, 28) else Kind.VEHICLE)
-        result: list[Detection] = []
-        for index in cv2.dnn.NMSBoxes(boxes, scores, self.threshold, 0.45):
-            x, y, w, h = boxes[int(index)]
-            x1, y1 = max(0, x / size), max(0, y / size)
-            x2, y2 = min(1, (x + w) / size), min(1, (y + h) / size)
-            if x1 < x2 and y1 < y2:
-                result.append(Detection(kinds[int(index)], (x1, y1, x2, y2), scores[int(index)]))
-        return result
-
-
 class CaptureWorker:
-    def __init__(self, camera: Camera, service: MonitorService, detector: Detector, on_error: Callable[[str], None]) -> None:
-        self.camera, self.service, self.detector, self.on_error = camera, service, detector, on_error
+    """Independent preview and bounded VLM sampling; no object/zone inference."""
+    def __init__(self, camera: Camera, service: MonitorService, analyzer: VisionAnalyzer, on_error: Callable[[str], None]) -> None:
+        self.camera, self.service, self.analyzer, self.on_error = camera, service, analyzer, on_error
         self.preview_fps = max(1, min(15, float(os.getenv("SENTINEL_PREVIEW_FPS", "5"))))
-        self.inference_fps = max(0.5, min(10, float(os.getenv("SENTINEL_INFERENCE_FPS", "2"))))
         self.stop_event = StopEvent()
+        self._ended = StopEvent()
         self._frame_ready = StopEvent()
         self._frame_lock = RLock()
-        self._latest_frame: object | None = None
-        self.activity_estimator = FrameActivityEstimator()
+        self._samples = deque(maxlen=ANALYSIS_WINDOW_FRAMES)
         self.capture_thread = Thread(target=self._capture, name=f"capture-{camera.id}", daemon=True)
-        self.detect_thread = Thread(target=self._detect, name=f"detect-{camera.id}", daemon=True)
+        self.detect_thread = Thread(target=self._detect, name=f"analysis-{camera.id}", daemon=True)
 
     def start(self) -> None:
         self.detect_thread.start()
@@ -191,7 +115,6 @@ class CaptureWorker:
 
     def _capture(self) -> None:
         import cv2
-
         file_source = isinstance(self.camera.source, str) and Path(self.camera.source).is_file()
         while not self.stop_event.is_set():
             capture = cv2.VideoCapture(self.camera.source)
@@ -200,76 +123,92 @@ class CaptureWorker:
                 capture.release()
                 self.stop_event.wait(2)
                 continue
-            reached_end = False
             try:
-                next_preview = 0.0
-                next_activity = 0.0
+                next_preview = next_sample = 0.0
                 fps = capture.get(cv2.CAP_PROP_FPS) if file_source else 0.0
-                playback_start = monotonic()
+                fps = fps if 0 < fps <= 240 else 24.0
+                started = monotonic()
                 frame_index = 0
                 while not self.stop_event.is_set():
                     ok, frame = capture.read()
                     if not ok:
-                        reached_end = True
                         break
-                    if file_source and 0 < fps <= 240:
-                        if self.stop_event.wait(max(0.0, playback_start + frame_index / fps - monotonic())):
-                            break
+                    if file_source and self.stop_event.wait(max(0.0, started + frame_index / fps - monotonic())):
+                        break
+                    at = frame_index / fps if file_source else monotonic() - started
                     frame_index += 1
-                    with self._frame_lock:
-                        self._latest_frame = frame
-                        self._frame_ready.set()
                     now = monotonic()
-                    if now >= next_activity:
-                        camera = next(item for item in self.service.cameras() if item.id == self.camera.id)
-                        if any(zone.rule == Rule.DOOR_TAMPERING for zone in camera.zones):
-                            _, scores = self.activity_estimator.measure(frame, [], camera.zones)
-                            self.service.observe_zone_activity(self.camera.id, scores, time())
-                        next_activity = now + 0.5  # Door motion does not wait for slow person inference.
+                    if at >= next_sample:
+                        with self._frame_lock:
+                            self._samples.append(sample_frame(frame, at))
+                            if len(self._samples) >= ANALYSIS_WINDOW_FRAMES:
+                                self._frame_ready.set()
+                        next_sample = at + SAMPLE_INTERVAL_SECONDS
                     if now >= next_preview:
-                        encoded, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
-                        if encoded:
+                        ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                        if ok:
                             self.service.set_frame(self.camera.id, jpeg.tobytes())
-                            self.service.set_status(self.camera.id, "running", type(self.detector).__name__)
+                            self.service.set_status(self.camera.id, "running", "visual-analysis")
                         next_preview = now + 1 / self.preview_fps
-            except Exception as error:
-                self.on_error(f"camera {self.camera.id}: {error}")
+                if file_source:
+                    self._ended.set()
+                    self._frame_ready.set()
+                    return
+                if self.stop_event.is_set():
+                    return
+                with self._frame_lock:
+                    self._samples.clear()  # Never combine frames across a disconnection.
+                self.on_error(f"camera {self.camera.id}: source disconnected")
+            except Exception:
+                self.on_error(f"camera {self.camera.id}: capture failed")
             finally:
                 capture.release()
-            if file_source and reached_end and not self.stop_event.is_set():
-                self.service.set_status(self.camera.id, "finished", type(self.detector).__name__)
-                self.stop_event.set()
-                self._frame_ready.set()
-                break
             self.stop_event.wait(1)
 
     def _detect(self) -> None:
         while not self.stop_event.is_set():
             if not self._frame_ready.wait(0.2):
                 continue
+            if self.stop_event.is_set():
+                return
             with self._frame_lock:
-                frame = self._latest_frame
+                frames = tuple(self._samples)
+                self._samples.clear()
                 self._frame_ready.clear()
-            if frame is None or self.stop_event.is_set():
-                continue
-            try:
-                started = monotonic()
-                detections = self.detector.detect(frame)
-                if not self.stop_event.is_set():
-                    self.service.observe(self.camera.id, detections, time(), {}, process_zone_activity=False)
-                self.stop_event.wait(max(0, 1 / self.inference_fps - (monotonic() - started)))
-            except Exception as error:
-                self.on_error(f"camera {self.camera.id}: detection failed: {error}")
-                self.stop_event.set()
+            if frames:
+                try:
+                    self.service.set_analysis_status(self.camera.id, "analyzing")
+                    finding = self.analyzer.analyze(frames)
+                    if not self.stop_event.is_set():
+                        self.service.record_finding(self.camera.id, finding)
+                except ModelBusy:
+                    self.service.set_analysis_status(self.camera.id, "waiting")
+                    if self._ended.is_set():
+                        with self._frame_lock:
+                            self._samples.extend(frames)
+                            self._frame_ready.set()
+                        self.stop_event.wait(0.5)
+                        continue
+                except Exception as error:
+                    self.service.set_analysis_status(self.camera.id, "error", str(error))
+                    self.stop_event.set()
+                    self.on_error(f"camera {self.camera.id}: analysis failed; see analysis status")
+                    return
+            if self._ended.is_set():
+                with self._frame_lock:
+                    if self._samples:
+                        self._frame_ready.set()
+                        continue
+                self.service.set_status(self.camera.id, "finished", "visual-analysis")
                 return
 
 
 class CaptureController:
     """Starts each video source only when requested and releases it on stop."""
 
-    def __init__(self, service: MonitorService, detector_factory: Callable[[], Detector]) -> None:
+    def __init__(self, service: MonitorService, analyzer_factory: Callable[[], VisionAnalyzer]) -> None:
         self.service = service
-        self.detector_factory = detector_factory
+        self.analyzer_factory = analyzer_factory
         self._lock = RLock()
         self._workers: dict[str, CaptureWorker] = {}
 
@@ -286,10 +225,10 @@ class CaptureController:
                     return self.service.status(camera_id)
                 self._workers.pop(camera_id).stop()
                 self.service.clear_live(camera_id)
-            detector = self.detector_factory()
-            self.service.set_status(camera_id, "starting", type(detector).__name__)
-            worker = CaptureWorker(camera, self.service, detector,
-                lambda error: self.service.set_status(camera_id, "error", type(detector).__name__, error))
+            analyzer = self.analyzer_factory()
+            self.service.set_status(camera_id, "starting", "visual-analysis")
+            worker = CaptureWorker(camera, self.service, analyzer,
+                lambda error: self.service.set_status(camera_id, "error", "visual-analysis", error))
             self._workers[camera_id] = worker
             worker.start()
             return self.service.status(camera_id)

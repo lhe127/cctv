@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
 from time import time
+from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response, StreamingResponse
@@ -19,10 +20,38 @@ from .algorithm_test import AlgorithmTestRunner
 from .domain import Camera, Detection, Kind, Rule, Zone
 from .service import MonitorService
 from .storage import JsonCameraRepository, JsonStateStore
-from .video import CaptureController, OpenCvZooYoloXDetector, YoloOnnxDetector
-from .byte_tracking import ByteTrackAdapter
+from .video import CaptureController
+from .smolvlm import SmolVLM2Analyzer, MODEL_ID
+from .vision import VisionAnalyzer
 from .tracking import CentroidTracker
 from .capabilities import CAPABILITIES
+
+
+class FindingOutput(BaseModel):
+    description: str
+    model: str
+    revision: str
+    start_seconds: float
+    end_seconds: float
+    frames_analyzed: int
+    review_required: bool
+    id: str | None = None
+    camera_id: str | None = None
+    observed_at: str | None = None
+
+
+class AnalysisJobOutput(BaseModel):
+    id: str
+    filename: str
+    state: Literal["queued", "running", "completed", "failed"]
+    mode: str
+    created_at: str
+    started_at: str | None = None
+    completed_at: str | None = None
+    findings: list[FindingOutput] = Field(default_factory=list)
+    frames_processed: int
+    warnings: list[str] = Field(default_factory=list)
+    error: str | None = None
 
 
 class DetectionInput(BaseModel):
@@ -109,7 +138,7 @@ def _public_camera(camera: Camera) -> dict[str, object]:
 
 
 def create_app(config_path: str | None = None, api_key: str | None = None,
-               data_path: str | None = None) -> FastAPI:
+               data_path: str | None = None, analyzer: VisionAnalyzer | None = None) -> FastAPI:
     project_root = Path(__file__).resolve().parents[2]
     config_value = config_path or os.getenv("SENTINEL_CONFIG")
     config_source = Path(config_value) if config_value else project_root / "data" / "cameras.json"
@@ -120,12 +149,10 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
     state_value = data_path or os.getenv("SENTINEL_DATA_FILE")
     state_path = Path(state_value) if state_value else project_root / "data" / "sentinel-state.json"
     state_store = JsonStateStore(state_path)
-    tracker_kind = os.getenv("SENTINEL_TRACKER", "bytetrack")
-    inference_fps = max(0.5, min(10, float(os.getenv("SENTINEL_INFERENCE_FPS", "2"))))
-    if tracker_kind not in {"bytetrack", "centroid"}:
-        raise ValueError("SENTINEL_TRACKER must be bytetrack or centroid")
-    tracker_factory = (lambda: ByteTrackAdapter(inference_fps)) if tracker_kind == "bytetrack" else CentroidTracker
-    service = MonitorService(event_store=state_store, tracker_factory=tracker_factory)
+    tracker_kind = "disabled"
+    inference_fps = 0.5
+    tracker_factory = CentroidTracker
+    service = MonitorService(event_store=state_store, tracker_factory=tracker_factory, finding_store=state_store)
     for camera in camera_repository.load():
         service.add_camera(camera)
 
@@ -133,20 +160,14 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
     if not secret:
         raise RuntimeError("SENTINEL_API_KEY is required")
 
-    def detector_factory():
-        model = Path(os.getenv("SENTINEL_ONNX_MODEL") or project_root / "models" / "object_detection_yolox_2022nov.onnx")
-        if not model.is_file():
-            raise FileNotFoundError(f"detector model missing: {model}")
-        detector_kind = os.getenv("SENTINEL_DETECTOR", "yolox")
-        if detector_kind == "yolox":
-            return OpenCvZooYoloXDetector(str(model), threshold=0.1 if tracker_kind == "bytetrack" else 0.45)
-        if detector_kind == "yolov8":
-            return YoloOnnxDetector(str(model), threshold=0.1 if tracker_kind == "bytetrack" else 0.4)
-        raise ValueError("SENTINEL_DETECTOR must be yolox or yolov8")
+    vision_analyzer = analyzer or SmolVLM2Analyzer()
 
-    controller = CaptureController(service, detector_factory)
-    algorithm_runner = AlgorithmTestRunner(detector_factory, state_store, state_path.parent / "algorithm-results",
-                                          tracker_factory=tracker_factory, inference_fps=inference_fps)
+    def analyzer_factory():
+        return vision_analyzer
+
+    controller = CaptureController(service, analyzer_factory)
+    algorithm_runner = AlgorithmTestRunner(analyzer_factory, state_store, state_path.parent / "algorithm-results",
+                                          inference_fps=inference_fps)
     config_lock = asyncio.Lock()
 
     async def authorize(x_api_key: str | None = Header(default=None)) -> None:
@@ -156,10 +177,12 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         yield
-        await asyncio.to_thread(controller.stop_all)
-        algorithm_runner.close()
+        try:
+            await asyncio.to_thread(controller.stop_all)
+        finally:
+            await asyncio.to_thread(algorithm_runner.close)
 
-    app = FastAPI(title="Township Sentinel", version="0.2.0", lifespan=lifespan)
+    app = FastAPI(title="Township Sentinel", version="0.3.0", lifespan=lifespan)
     app.state.service = service
     app.state.controller = controller
     app.state.algorithm_runner = algorithm_runner
@@ -179,7 +202,8 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
             "camera_count": len(states),
             "online_count": sum(item["state"] in {"starting", "running"} for item in states),
             "alert_count": len(service.events()),
-            "detection_count": len(service.detections()),
+            "detection_count": 0,
+            "finding_count": len(service.findings()),
             "algorithm_test_count": len(algorithm_runner.list()),
         }
 
@@ -190,7 +214,7 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
     @app.get("/api/v1/capabilities", dependencies=[Depends(authorize)])
     async def capabilities():
         return {"items": CAPABILITIES, "tracker": tracker_kind, "inference_fps": inference_fps,
-                "test_duration_limit_seconds": 60}
+                "test_duration_limit_seconds": 60, "model": MODEL_ID, "automatic_alerts": False}
 
     @app.get("/api/v1/cameras/{camera_id}", dependencies=[Depends(authorize)])
     async def camera_detail(camera_id: str):
@@ -280,9 +304,7 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
     async def camera_status(camera_id: str):
         try:
             camera_state = service.status(camera_id)
-            tracks_now = service.tracks(camera_id)
-            return {**camera_state, "person_count": sum(track.kind == Kind.PERSON for track in tracks_now),
-                    "vehicle_count": sum(track.kind == Kind.VEHICLE for track in tracks_now)}
+            return {**camera_state, "person_count": None, "vehicle_count": None, "tracking_supported": False}
         except KeyError:
             raise HTTPException(status_code=404, detail="camera not found")
 
@@ -304,16 +326,16 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
         except RuntimeError as error:
             raise HTTPException(status_code=503, detail=str(error))
 
-    @app.post("/api/v1/cameras/{camera_id}/observations", dependencies=[Depends(authorize)])
+    @app.post("/api/v1/cameras/{camera_id}/observations", deprecated=True, dependencies=[Depends(authorize)])
     async def observe(camera_id: str, payload: ObservationInput):
-        try:
-            detections = [Detection(item.kind, item.box, item.confidence, item.activity) for item in payload.detections]
-            tracks_now, events = service.observe(camera_id, detections, payload.at if payload.at is not None else time())
-            return {"tracks": [public_track(track) for track in tracks_now], "events": [asdict(event) for event in events]}
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail=str(error))
-        except KeyError:
+        raise HTTPException(status_code=410, detail="Object observations are retired. Use the visual analysis API.")
+
+    @app.get("/api/v1/findings", response_model=list[FindingOutput], response_model_exclude_none=True,
+             dependencies=[Depends(authorize)])
+    async def findings(camera_id: str | None = None):
+        if camera_id and not any(camera.id == camera_id for camera in service.cameras()):
             raise HTTPException(status_code=404, detail="camera not found")
+        return service.findings(camera_id)
 
     @app.get("/api/v1/events", dependencies=[Depends(authorize)])
     async def events(camera_id: str | None = None):
@@ -353,6 +375,8 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
 
         return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame")
 
+    @app.post("/api/v1/analysis-jobs", status_code=status.HTTP_202_ACCEPTED,
+              response_model=AnalysisJobOutput, response_model_exclude_none=True, dependencies=[Depends(authorize)])
     @app.post("/api/v1/algorithm-tests", status_code=status.HTTP_202_ACCEPTED,
               dependencies=[Depends(authorize)])
     async def create_algorithm_test(request: Request, x_filename: str | None = Header(default=None),
@@ -383,6 +407,8 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
     async def algorithm_tests():
         return algorithm_runner.list()
 
+    @app.get("/api/v1/analysis-jobs/{test_id}", response_model=AnalysisJobOutput,
+             response_model_exclude_none=True, dependencies=[Depends(authorize)])
     @app.get("/api/v1/algorithm-tests/{test_id}", dependencies=[Depends(authorize)])
     async def algorithm_test(test_id: str):
         try:
@@ -390,6 +416,7 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
         except KeyError:
             raise HTTPException(status_code=404, detail="algorithm test not found")
 
+    @app.get("/api/v1/analysis-jobs/{test_id}/result", dependencies=[Depends(authorize)])
     @app.get("/api/v1/algorithm-tests/{test_id}/result", dependencies=[Depends(authorize)])
     async def algorithm_test_result(test_id: str):
         try:
@@ -436,9 +463,8 @@ def run() -> None:
     import uvicorn
     logging.basicConfig(level=os.getenv("SENTINEL_LOG_LEVEL", "INFO").upper(),
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    logging.getLogger("sentinel").info("Starting local console; preview=%s FPS inference=%s FPS",
-                                     os.getenv("SENTINEL_PREVIEW_FPS", "5"),
-                                     os.getenv("SENTINEL_INFERENCE_FPS", "2"))
+    logging.getLogger("sentinel").info("Starting local console; model=SmolVLM2 preview=%s FPS sample_interval=0.5s",
+                                     os.getenv("SENTINEL_PREVIEW_FPS", "5"))
     uvicorn.run(create_app(), host="127.0.0.1", port=int(os.getenv("SENTINEL_PORT", "8000")), access_log=False)
 
 

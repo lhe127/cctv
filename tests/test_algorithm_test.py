@@ -5,22 +5,30 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 
 from sentinel.algorithm_test import AlgorithmTestRunner
 from sentinel.domain import Camera, Detection, Kind, Rule, Zone
-from sentinel.byte_tracking import ByteTrackAdapter
-from sentinel.replay import ReplaySession
+from sentinel.vision_session import VisionSession
+from sentinel.vision import VisualFinding
 from threading import Event
 from sentinel.storage import JsonStateStore
 
 
+@pytest.fixture(autouse=True)
+def no_webm_codec_tag_warning(capfd):
+    yield
+    assert "'VP80' is not supported" not in capfd.readouterr().err
+
+
 class FakeDetector:
-    def detect(self, frame):
-        return [Detection(Kind.PERSON, (0.1, 0.1, 0.5, 0.8), 0.91)]
+    def analyze(self, frames):
+        return VisualFinding("A person is visible.", "fixture", "test", frames[0].offset_seconds,
+                             frames[-1].offset_seconds, len(frames))
 
 
 class AlgorithmTestRunnerTests(unittest.TestCase):
-    def test_recorded_rules_use_media_time_and_persist_separate_timeline(self):
+    def test_recorded_analysis_uses_media_time_without_legacy_alerts(self):
         with tempfile.TemporaryDirectory(dir=".") as directory:
             root = Path(directory)
             source = root / "scene.avi"
@@ -29,7 +37,7 @@ class AlgorithmTestRunnerTests(unittest.TestCase):
                 writer.write(np.zeros((80, 100, 3), dtype=np.uint8))
             writer.release()
             store = JsonStateStore(root / "state.json")
-            runner = AlgorithmTestRunner(FakeDetector, store, root / "results", ByteTrackAdapter)
+            runner = AlgorithmTestRunner(FakeDetector, store, root / "results")
             camera = Camera("saved", "Saved camera", "rtsp://private:secret@device",
                             (Zone("pool", Rule.POOL_SAFETY, ((0, 0), (1, 0), (1, 1), (0, 1)), dwell_seconds=1),))
             try:
@@ -39,20 +47,22 @@ class AlgorithmTestRunnerTests(unittest.TestCase):
                     time.sleep(.02)
                 result = runner.get(job["id"])
                 self.assertEqual(result["state"], "completed", result)
-                self.assertEqual(result["events"][0]["offset_seconds"], 1)
-                self.assertEqual(result["events"][0]["rule"], "pool_safety")
+                self.assertEqual(result["events"], [])
+                self.assertEqual(result["findings"][0]["start_seconds"], 0)
+                self.assertEqual(result["findings"][0]["end_seconds"], 2.5)
+                self.assertEqual(result["findings"][0]["frames_analyzed"], 6)
                 self.assertNotIn("secret", str(result))
                 self.assertEqual(store.load_events(), [])
-                self.assertEqual(store.list_algorithm_tests()[0]["zones"][0]["dwell_seconds"], 1)
+                self.assertEqual(store.list_algorithm_tests()[0]["zones"], [])
             finally:
                 runner.close()
 
     def test_queue_is_bounded_and_shutdown_removes_pending_inputs(self):
         gate = Event()
         class BlockingDetector:
-            def detect(self, frame):
+            def analyze(self, frames):
                 gate.wait(3)
-                return []
+                return FakeDetector().analyze(frames)
         with tempfile.TemporaryDirectory(dir=".") as directory:
             root = Path(directory)
             runner = AlgorithmTestRunner(BlockingDetector, JsonStateStore(root / "state.json"), root / "results")
@@ -70,9 +80,11 @@ class AlgorithmTestRunnerTests(unittest.TestCase):
     def test_still_image_cannot_accumulate_dwell(self):
         camera = Camera("saved", "Saved", "synthetic", (Zone("wait", Rule.LOITERING,
                         ((0, 0), (1, 0), (1, 1), (0, 1)), dwell_seconds=1),))
-        session = ReplaySession(camera, FakeDetector(), ByteTrackAdapter())
+        session = VisionSession(FakeDetector())
         session.process(np.zeros((80, 100, 3), dtype=np.uint8), 0, True, True)
+        session.flush()
         self.assertEqual(session.events, [])
+        self.assertEqual(session.findings[0]["frames_analyzed"], 1)
 
     def test_video_output_and_legacy_conversion_are_webm(self):
         with tempfile.TemporaryDirectory(dir=".") as directory:
@@ -90,9 +102,6 @@ class AlgorithmTestRunnerTests(unittest.TestCase):
                 self.assertEqual(path.suffix, ".webm")
                 self.assertEqual(path.read_bytes()[:4], bytes.fromhex("1a45dfa3"))
                 self.assertEqual(count, 10)
-                decoded = cv2.VideoCapture(str(path))
-                self.assertTrue(decoded.read()[0])
-                decoded.release()
                 legacy = root / "results" / "legacy.mp4"
                 legacy.write_bytes(source.read_bytes())
                 store.put_algorithm_test({"id": "legacy", "state": "completed",
@@ -102,10 +111,24 @@ class AlgorithmTestRunnerTests(unittest.TestCase):
                 self.assertTrue(legacy.exists())
                 self.assertTrue(converted.exists())
                 self.assertEqual(runner.result("legacy"), (converted, media_type))
+                for preview in (path, converted):
+                    decoded = cv2.VideoCapture(str(preview))
+                    try:
+                        decoded_count = 0
+                        while True:
+                            ok, frame = decoded.read()
+                            if not ok:
+                                break
+                            self.assertEqual(frame.shape, (80, 100, 3))
+                            decoded_count += 1
+                        self.assertEqual(decoded_count, 10)
+                        self.assertAlmostEqual(decoded.get(cv2.CAP_PROP_FPS), 5, places=2)
+                    finally:
+                        decoded.release()
             finally:
                 runner.close()
 
-    def test_image_job_is_annotated_and_persisted(self):
+    def test_image_finding_and_preview_are_persisted(self):
         with tempfile.TemporaryDirectory(dir=".") as directory:
             root = Path(directory)
             store = JsonStateStore(root / "state.json")
@@ -118,7 +141,8 @@ class AlgorithmTestRunnerTests(unittest.TestCase):
                 time.sleep(0.02)
             result = runner.get(job["id"])
             self.assertEqual(result["state"], "completed", result)
-            self.assertEqual(result["detections"][0]["kind"], "person")
+            self.assertEqual(result["detections"], [])
+            self.assertEqual(result["findings"][0]["description"], "A person is visible.")
             path, media_type = runner.result(job["id"])
             self.assertTrue(path.is_file())
             self.assertEqual(media_type, "image/jpeg")

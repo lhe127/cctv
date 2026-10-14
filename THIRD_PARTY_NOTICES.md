@@ -2,10 +2,11 @@
 
 - [FastAPI](https://github.com/fastapi/fastapi): MIT license; HTTP API and generated OpenAPI documentation.
 - [Uvicorn](https://github.com/Kludex/uvicorn): BSD 3-Clause license; ASGI server.
-- [OpenCV](https://opencv.org/license/): Apache 2.0 for versions 4.5.0 and newer; optional video capture, JPEG encoding, and ONNX inference.
-- [NumPy](https://github.com/numpy/numpy): main project BSD 3-Clause license; optional ONNX output handling. Binary wheels may contain separately licensed components; inspect the installed wheel's license file.
+- [OpenCV](https://opencv.org/license/): Apache 2.0 for versions 4.5.0 and newer; optional video capture, JPEG encoding, and media decoding.
+- [NumPy](https://github.com/numpy/numpy): main project BSD 3-Clause license; image arrays. Binary wheels may contain separately licensed components; inspect the installed wheel's license file.
+- [PyAV 16.1.0](https://github.com/PyAV-Org/PyAV/tree/v16.1.0): BSD-3-Clause, unmodified optional dependency for VP8/WebM previews. The inspected Windows CPython 3.14 wheel bundles shared FFmpeg libraries; its libavcodec reports LGPL version 3 or later. Keep the library replaceable and retain applicable notices and corresponding library source when redistributing; other platform wheels need their own bundled-license review. PyAV's BSD license does not replace the bundled libraries' terms. No upstream code is copied into the adapter. This is a compatibility and license inspection, not a comprehensive vulnerability audit.
 
-Verify the provenance of any replacement ONNX weights before deployment; package licenses do not establish model-weight rights.
+Verify model-weight provenance separately from runtime package licenses when adopting a future adapter.
 
 ## Three.js 0.180.0 (r180)
 
@@ -22,8 +23,16 @@ SHA-256 inventory:
 
 Geometry and procedural surface/foliage textures are project-authored interpretations of the owner-supplied layout. No external model, photograph, or texture asset is bundled, and no site data is sent to an external map service.
 
-## OpenCV Zoo YOLOX-S
+## Local visual analysis
 
-The project vendors `models/object_detection_yolox/yolox.py` from [OpenCV Zoo](https://github.com/opencv/opencv_zoo/tree/47534e27c9851bb1128ccc0102f1145e27f23f98/models/object_detection_yolox) at commit `47534e27c9851bb1128ccc0102f1145e27f23f98`, with only a provenance comment added. The original directory and its ONNX weights are licensed Apache 2.0; the license text is preserved in `src/sentinel/vendor/OPENCV_ZOO_YOLOX_LICENSE`.
+- [SmolVLM2-500M-Video-Instruct](https://huggingface.co/HuggingFaceTB/SmolVLM2-500M-Video-Instruct): Apache-2.0 checkpoint, revision `db3405a20a36b388e11e70afe17484666b8f3e1a`. Downloaded separately; model card retained locally. No training dataset is downloaded or redistributed. Dataset licenses do not follow automatically from the checkpoint license.
+- [Transformers 4.57.6](https://github.com/huggingface/transformers/blob/v4.57.6/LICENSE): Apache-2.0; processor and inference integration, used as an unmodified dependency.
+- [PyTorch 2.10.0](https://github.com/pytorch/pytorch/blob/v2.10.0/LICENSE): BSD-style license with bundled third-party notices; CUDA wheels additionally contain NVIDIA components subject to their bundled terms.
+- [torchvision 0.25.0](https://github.com/pytorch/vision/blob/v0.25.0/LICENSE): BSD-3-Clause; image/video preprocessing.
+- [num2words 0.5.14](https://github.com/savoirfairelinux/num2words/blob/v0.5.14/COPYING): LGPL-2.1; required by the upstream SmolVLM video processor. Kept as an unmodified, replaceable Python dependency. Distributors must retain its license/notices and provide the applicable library source and replacement rights; it is not copied into first-party code.
 
-The local model file is downloaded separately by `scripts/download_yolox.py` and is excluded from source control. Its SHA-256 is `c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063`. Training-data rights and deployment accuracy should be reviewed for any production use.
+Transitive dependency licenses remain in installed distribution metadata (including Hugging Face Hub, tokenizers, safetensors, Pillow, and NumPy). No remote model code is enabled. Direct inference dependencies and the checkpoint revision are pinned; this is not a full supply-chain security audit.
+
+## Retired YOLOX integration
+
+The prior OpenCV Zoo YOLOX adapter and downloader were removed in the SmolVLM2 migration. Historical ADRs refer to that implementation; YOLOX is not loaded by the application. Its former upstream was OpenCV Zoo commit `47534e27c9851bb1128ccc0102f1145e27f23f98`, licensed Apache-2.0.
