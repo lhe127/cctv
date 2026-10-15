@@ -108,7 +108,7 @@ def test_prompt_and_token_settings_reach_model_call(tmp_path, monkeypatch):
             calls.append(messages[0]['content'][1]['text'])
             return 'fixture'
         def __call__(self, **kwargs): return Inputs(input_ids=np.array([[1]]))
-        def batch_decode(self, output, **kwargs): return ['Visible scene']
+        def batch_decode(self, output, **kwargs): return ['DANGER: yes\nVisible dangerous action.']
     def generate(**kwargs):
         calls.append(kwargs['max_new_tokens'])
         return np.array([[1, 2]])
@@ -119,5 +119,8 @@ def test_prompt_and_token_settings_reach_model_call(tmp_path, monkeypatch):
     frame = sample_frame(np.zeros((4, 4, 3), dtype=np.uint8), 0)
     for prompt, tokens in [('First prompt', 32), ('Second prompt', 64)]:
         store.save(AnalysisSettings(prompt=prompt, max_new_tokens=tokens))
-        analyzer.analyze((frame,))
-    assert calls == ['First prompt', 32, 'Second prompt', 64]
+        result = analyzer.analyze((frame,))
+        assert result.danger_status == 'yes'
+        assert result.description == 'Visible dangerous action.'
+    from sentinel.smolvlm import ALERT_FORMAT
+    assert calls == ['First prompt' + ALERT_FORMAT, 32, 'Second prompt' + ALERT_FORMAT, 64]

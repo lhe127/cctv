@@ -298,3 +298,15 @@ svg { display: block; }
 #settings-editor { margin-top:24px; }
 #analysis-settings > .full { grid-column:1 / -1; }
 #settings-status { margin-left:12px; color:#167866; }
+.map-place-label.map-alert-pin { z-index:3; background:#ad2638; color:white; border:2px solid white; border-radius:18px; padding:6px 10px; font-weight:800; }
+.map-alert-panel { border-color:#e9b4bc; }
+.map-alert-entry { padding:12px 0; border-bottom:1px solid var(--line); overflow-wrap:anywhere; }
+.map-alert-entry p { margin:6px 0; }
+.map-alert-entry a { display:block; margin-top:8px; }
+#map-pending-alerts { max-height:420px; overflow:auto; }
+.danger-alert { display:flex; justify-content:space-between; align-items:flex-start; gap:18px; padding:18px 0; border-bottom:1px solid var(--line); overflow-wrap:anywhere; scroll-margin-top:90px; }
+.danger-alert > div { min-width:0; }
+.danger-alert > button { flex-shrink:0; }
+.danger-pending { background:#fff0f2; color:#ad2638; }
+.danger-alert:target { outline:2px solid #ad2638; outline-offset:4px; }
+@media(max-width:600px) { .danger-alert { flex-direction:column; } }

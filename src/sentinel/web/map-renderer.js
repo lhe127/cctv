@@ -60,6 +60,35 @@ export function mount(canvas, {root, cameras, onSelect}) {
     label.addEventListener('click',()=>select(feature.id,true),{signal:listeners.signal});labelLayer.append(label);labelNodes.set(feature.id,label);
   }
   const selection=new THREE.Box3Helper(new THREE.Box3(),0x218775);selection.visible=false;scene.add(selection);
+  function setAlerts(alerts){
+    if(disposed)return;
+    const groups=new Map();
+    for(const alert of alerts){
+      if(alert.status!=='pending'||!alert.map_position)continue;
+      const {x,y}=alert.map_position,id=`alerts-${x}-${y}`;
+      if(!groups.has(id))groups.set(id,{id,x:80+x,z:55-y,items:[]});
+      groups.get(id).items.push(alert);
+    }
+    for(let i=features.length-1;i>=0;i--)if(features[i].type==='Alert'){
+      labelNodes.get(features[i].id)?.remove();labelNodes.delete(features[i].id);features.splice(i,1);
+    }
+    for(const group of groups.values()){
+      const feature={...group,type:'Alert',icon:'!',state:'Pending · review required',label:`${group.items.length} pending alert${group.items.length===1?'':'s'}`,
+        description:group.items.map(item=>`${item.camera_name||'Uploaded media'}: ${item.description}`).join('\n'),
+        facts:[['Pending',group.items.length],['X',group.x-80],['Y',55-group.z],['Location','At detection time']]};
+      features.push(feature);
+      const label=document.createElement('button');label.type='button';label.className='map-place-label map-alert-pin';
+      label.textContent=`! ${group.items.length}`;label.setAttribute('aria-label',`${feature.label} at (${group.x-80}, ${55-group.z})`);
+      // Removed nodes own their listener; avoid accumulating AbortSignal listeners on every refresh.
+      label.addEventListener('click',()=>select(feature.id,true));labelLayer.append(label);labelNodes.set(feature.id,label);
+    }
+    if(selected?.type==='Alert'){
+      const updated=features.find(item=>item.id===selected.id);
+      if(updated){selected=updated;onSelect(updated);}
+      else{selected=null;selection.visible=false;onSelect({type:'Alerts',icon:'✓',label:'Location cleared',state:'No pending alerts',description:'There are no longer pending alerts at this location.',facts:[]});}
+    }
+    invalidate();
+  }
   function select(id,focus=false){
     const feature=features.find(item=>item.id===id);if(!feature)return;
     selected=feature;
@@ -142,5 +171,5 @@ export function mount(canvas, {root, cameras, onSelect}) {
   }
   let frame=requestAnimationFrame(render);
   window.addEventListener('pagehide',dispose,{once:true,signal:listeners.signal});
-  return {dispose,select,reset};
+  return {dispose,select,reset,setAlerts};
 }

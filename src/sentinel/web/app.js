@@ -26,7 +26,7 @@
     robots: ['Automation', 'Robots'],
     map: ['Township', 'Residential map'],
     settings: ['Administration', 'Analysis settings'],
-    alerts: ['Visual analysis', 'Review findings'],
+    alerts: ['Visual analysis', 'Alerts & review'],
     'algorithm-test': ['Testing lab', 'Algorithm test'],
   };
 
@@ -132,7 +132,7 @@
     try {
       const summary = await api('/api/v1/summary');
       document.getElementById('camera-nav-count').textContent = summary.camera_count;
-      document.getElementById('alert-nav-count').textContent = summary.finding_count || '';
+      document.getElementById('alert-nav-count').textContent = summary.alert_count || '';
     } catch (error) {
       toast(error.message, 'error');
     }
@@ -161,7 +161,7 @@
       <div class="section-head"><div><h2>Good day, Operator</h2><p>Here is the current township operations overview.</p></div><div class="head-actions"><a class="button button-secondary" href="/algorithm-test">${icon('flask')} Run media test</a><a class="button button-primary" href="/cameras">${icon('camera')} Manage cameras</a></div></div>
       <section class="metric-grid">
         ${metric('Cameras online', `${summary.online_count} / ${summary.camera_count}`, 'Configured monitoring sources', 'camera', '#12a886', '#e7f7f3')}
-        ${metric('Review findings', summary.finding_count, 'Saved visual descriptions', 'alert', '#d94c5c', '#fff0f2')}
+        ${metric('Pending alerts', summary.alert_count, 'Model flags requiring human review', 'alert', '#d94c5c', '#fff0f2')}
         ${metric('Analysis model', 'SmolVLM2', 'Local video understanding', 'person', '#3976e8', '#edf3ff')}
         ${metric('Media tests', summary.algorithm_test_count, 'Saved local test runs', 'flask', '#9a6ad9', '#f4effb')}
       </section>
@@ -256,7 +256,7 @@
         const action = content.querySelector('[data-camera-action]');
         action.dataset.cameraAction = ['running', 'starting', 'error'].includes(state.state) ? 'stop' : 'start';
         action.textContent = camera.source_type === 'synthetic' ? 'Virtual input' : action.dataset.cameraAction === 'stop' ? 'Stop camera' : 'Start camera';
-        content.querySelector('#behavior-grid').innerHTML = `<article class="behavior-tile"><strong>${escapeHtml(state.analysis_state || 'Waiting for frames')}</strong><span>${escapeHtml(state.analysis_error || 'Sampling uses the settings active when this camera started. Findings require review; automatic alerts are disabled.')}</span></article>`;
+        content.querySelector('#behavior-grid').innerHTML = `<article class="behavior-tile"><strong>${escapeHtml(state.analysis_state || 'Waiting for frames')}</strong><span>${escapeHtml(state.analysis_error || 'Sampling uses the settings active when this camera started. Explicit danger results create pending alerts requiring review.')}</span></article>`;
         content.querySelector('#camera-alert-rows').innerHTML = events.length ? events.map(item => `<tr><td>${formatTime(item.observed_at)}</td><td>${Number(item.start_seconds).toFixed(1)}–${Number(item.end_seconds).toFixed(1)}s</td><td>${Number(item.frames_analyzed)}</td><td>${escapeHtml(item.description)}</td></tr>`).join('') : '<tr><td colspan="4">Waiting for the first analysis result.</td></tr>';
         if (!live) { content.querySelector('.camera-visual img').hidden = true; content.querySelector('.camera-placeholder').hidden = false; }
       } catch (error) {
@@ -339,13 +339,43 @@
   }
 
   async function renderAlerts() {
+    clearTimers();
     const [findings, cameras] = await Promise.all([api('/api/v1/findings'), api('/api/v1/cameras')]);
     const names = Object.fromEntries(cameras.map(camera => [camera.id, camera.name]));
-    content.innerHTML = `<div class="section-head"><div><h2>Visual review</h2><p>SmolVLM2 descriptions from sampled camera frames. Review the source before acting.</p></div></div>
+    content.innerHTML = `<div class="section-head"><div><h2>Danger alerts</h2><p>Model-flagged danger, not verified incidents. Review the source before acting. Refreshes every 5 seconds.</p></div><a class="button button-secondary" href="/map">View pending on map</a></div>
+      <article class="panel"><div class="panel-head"><label for="alert-filter">Status <select id="alert-filter" class="input"><option value="all">All alerts</option><option value="pending">Pending</option><option value="resolved">Resolved</option></select></label><span id="alert-refresh-status" role="status"></span></div><div class="panel-body" id="danger-alert-list"></div></article>
+      <h3>All camera findings</h3>
       <article class="panel"><div class="table-wrap"><table class="data-table"><thead><tr><th>Observed</th><th>Camera</th><th>Sample window</th><th>Description</th></tr></thead><tbody>${findings.length ? findings.map(item => `<tr><td>${formatTime(item.observed_at)}</td><td>${escapeHtml(names[item.camera_id] || item.camera_id)}</td><td>${Number(item.start_seconds).toFixed(1)}–${Number(item.end_seconds).toFixed(1)}s</td><td>${escapeHtml(item.description)}</td></tr>`).join('') : '<tr><td colspan="4">No visual findings yet. Start a camera to analyze its sampled frames.</td></tr>'}</tbody></table></div></article>`;
+    let alerts=[],busy=false,lastMarkup='';
+    const list=content.querySelector('#danger-alert-list');
+    function draw(){
+      const filter=content.querySelector('#alert-filter').value;
+      const visible=alerts.filter(item=>filter==='all'||item.status===filter);
+      const markup=visible.map(item=>`<article class="danger-alert" id="alert-${escapeHtml(item.id)}"><div><span class="state-pill ${item.status==='pending'?'danger-pending':''}">${escapeHtml(item.status)}</span><strong> ${escapeHtml(item.camera_name||'Unassigned media')}</strong><p>${escapeHtml(item.description)}</p><small>${formatTime(item.created_at)} · ${item.source==='media_job'?'Uploaded media':'Camera'} · ${Number(item.start_seconds).toFixed(1)}–${Number(item.end_seconds).toFixed(1)}s · Human review required</small><p>${item.map_position?`<a href="/map#alert-${encodeURIComponent(item.id)}">Location (${item.map_position.x}, ${item.map_position.y}) →</a>`:'Unplaced: no camera coordinates at detection time.'}</p>${item.resolved_at?`<small>Resolved ${formatTime(item.resolved_at)}</small>`:''}</div><button class="button button-secondary" data-alert-id="${escapeHtml(item.id)}" data-alert-status="${item.status==='pending'?'resolved':'pending'}">${item.status==='pending'?'Mark resolved':'Reopen pending'}</button></article>`).join('')||'<p>No alerts with this status.</p>';
+      if(markup!==lastMarkup){list.innerHTML=markup;lastMarkup=markup;}
+      document.getElementById('alert-nav-count').textContent=alerts.filter(item=>item.status==='pending').length||'';
+    }
+    async function refresh(){
+      if(busy)return;busy=true;
+      try{alerts=await api('/api/v1/alerts');draw();content.querySelector('#alert-refresh-status').textContent='Up to date';}
+      catch(error){content.querySelector('#alert-refresh-status').textContent='Refresh failed — showing last loaded alerts';toast(error.message,'error');}
+      finally{busy=false;}
+    }
+    content.querySelector('#alert-filter').addEventListener('change',draw);
+    list.addEventListener('click',async event=>{
+      const button=event.target.closest('[data-alert-id]');if(!button||busy)return;
+      busy=true;button.disabled=true;
+      try{await api(`/api/v1/alerts/${encodeURIComponent(button.dataset.alertId)}`,{method:'PATCH',json:{status:button.dataset.alertStatus}});toast('Alert status saved.');}
+      catch(error){toast(error.message,'error');}
+      finally{busy=false;button.disabled=false;await refresh();}
+    });
+    await refresh();
+    const target=document.getElementById(decodeURIComponent(window.location.hash.slice(1)));target?.scrollIntoView({block:'center'});
+    addTimer(()=>{if(!document.hidden)refresh();},5000);
   }
 
   async function renderMap() {
+    clearTimers();
     const cameras = await api('/api/v1/cameras');
     content.innerHTML = `<div class="section-head map-page-head"><div><h2>Residential digital twin</h2><p>Interactive 3D site model based on the supplied residential plan.</p></div><span class="state-pill running"><span class="status-dot"></span> Interactive model</span></div>
       <section class="map-grid">
@@ -361,6 +391,7 @@
           <div class="map-hint"><span>Drag to orbit</span><span>Scroll to zoom</span><span>Click an asset</span></div>
         </div>
         <aside class="map-side-panel">
+          <article class="panel map-alert-panel"><div class="panel-head"><h3>Pending alerts</h3><span id="map-alert-count">…</span></div><div class="panel-body"><p id="map-alert-status" role="status">Loading alerts…</p><div id="map-pending-alerts"></div><a class="link-button" href="/alerts">Manage alerts →</a></div></article>
           <article class="panel"><div class="panel-body"><h3>Plan coordinates</h3><p>Center (0, 0) · X: −80…80 · Y: −55…55<br>+X right/east · +Y up/north. Plan units, not GPS.</p><a href="/cameras" class="link-button">Set camera coordinates →</a><p><button class="button button-secondary" data-map-feature="patrol-robot">Locate simulated patrol robot</button></p></div></article>
           <article class="panel map-inspector" aria-live="polite">
             <div class="map-inspector-hero"><span id="map-inspector-icon">⌂</span><span class="state-pill" id="map-inspector-state">Site overview</span></div>
@@ -379,7 +410,7 @@
       </section>`;
 
     if (!window.SentinelResidentialMap) throw new Error('Residential map renderer is unavailable');
-    await window.SentinelResidentialMap.mount(content.querySelector('#residential-map-canvas'), {
+    const map = await window.SentinelResidentialMap.mount(content.querySelector('#residential-map-canvas'), {
       cameras,
       root: content,
       onSelect(feature) {
@@ -392,6 +423,26 @@
         content.querySelector('#map-inspector-facts').innerHTML = feature.facts.map(item => `<div><dt>${escapeHtml(item[0])}</dt><dd>${escapeHtml(item[1])}</dd></div>`).join('');
       },
     });
+    let refreshing=false,lastAlerts='',focused=false;
+    const pendingList=content.querySelector('#map-pending-alerts');
+    pendingList.addEventListener('click',event=>{const button=event.target.closest('[data-alert-focus]');if(button)map.select(button.dataset.alertFocus,true);});
+    async function refreshAlerts(){
+      if(refreshing)return;refreshing=true;
+      try{
+        const alerts=await api('/api/v1/alerts?status=pending');
+        const signature=JSON.stringify(alerts);
+        if(signature!==lastAlerts){
+          map.setAlerts(alerts);lastAlerts=signature;
+          pendingList.innerHTML=alerts.map(item=>`<div class="map-alert-entry"><strong>${escapeHtml(item.camera_name||'Unassigned media')}</strong><p>${escapeHtml(item.description)}</p>${item.map_position?`<button class="button button-secondary" data-alert-focus="alerts-${item.map_position.x}-${item.map_position.y}">Locate (${item.map_position.x}, ${item.map_position.y})</button>`:'<small>Unplaced — no coordinates at detection time</small>'}<a href="/alerts#alert-${encodeURIComponent(item.id)}">Review alert →</a></div>`).join('')||'<p>No pending alerts.</p>';
+        }
+        content.querySelector('#map-alert-count').textContent=alerts.length;
+        document.getElementById('alert-nav-count').textContent=alerts.length||'';
+        content.querySelector('#map-alert-status').textContent=`${alerts.filter(item=>!item.map_position).length} unplaced · model flags require review · refreshes every 5s`;
+        if(!focused){const target=alerts.find(item=>`#alert-${encodeURIComponent(item.id)}`===window.location.hash);if(target?.map_position)map.select(`alerts-${target.map_position.x}-${target.map_position.y}`,true);focused=true;}
+      }catch(error){content.querySelector('#map-alert-status').textContent='Alerts unavailable — last loaded markers may be stale.';}
+      finally{refreshing=false;}
+    }
+    await refreshAlerts();addTimer(()=>{if(!document.hidden)refreshAlerts();},5000);
   }
 
   function renderRobots() {

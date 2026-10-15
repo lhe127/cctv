@@ -8,7 +8,8 @@ from .vision import ANALYSIS_WINDOW_FRAMES, SAMPLE_INTERVAL_SECONDS, ModelBusy, 
 
 
 class VisionSession:
-    def __init__(self, analyzer: VisionAnalyzer, stop: Event | None = None, settings=None) -> None:
+    def __init__(self, analyzer: VisionAnalyzer, stop: Event | None = None, settings=None, on_finding=None) -> None:
+        self.on_finding = on_finding
         self.sample_interval = 1 / settings.sample_fps if settings else SAMPLE_INTERVAL_SECONDS
         self.window_frames = settings.window_frames if settings else ANALYSIS_WINDOW_FRAMES
         self.analyzer = analyzer
@@ -36,7 +37,10 @@ class VisionSession:
         while not self.stop.is_set():
             try:
                 finding = self.analyzer.analyze(tuple(self.pending))
-                self.findings.append(finding.public())
+                item = finding.public()
+                if self.on_finding:
+                    self.on_finding(item)
+                self.findings.append(item)
                 self.pending.clear()
                 return
             except ModelBusy:

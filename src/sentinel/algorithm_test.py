@@ -25,7 +25,8 @@ class AlgorithmTestRunner:
     """Runs one bounded media test at a time outside the API event loop."""
 
     def __init__(self, analyzer_factory: Callable[[], VisionAnalyzer], store: JsonStateStore, output_dir: Path,
-                 inference_fps: float = 0.5, settings_provider=None) -> None:
+                 inference_fps: float = 0.5, settings_provider=None, on_finding=None) -> None:
+        self.on_finding = on_finding
         self.settings_provider = settings_provider
         self.analyzer_factory = analyzer_factory
         self.inference_fps = inference_fps
@@ -71,7 +72,7 @@ class AlgorithmTestRunner:
             "events": [],
             "inference_fps": self.inference_fps,
             "warnings": (["A still image cannot validate motion or duration-based behavior."] if suffix in SUPPORTED_IMAGES else [])
-                        + ["Model descriptions require review. Tracking and automatic behavior alerts are disabled."],
+                        + ["Model descriptions and danger alerts require review. Tracking is disabled."],
         }
         with self._lock:
             if self._closed or self._pending >= 4:
@@ -182,7 +183,12 @@ class AlgorithmTestRunner:
                 raise RuntimeError("test cancelled during server shutdown")
             analyzer = self.analyzer_factory()
             settings = self.settings_provider() if self.settings_provider else None
-            session = VisionSession(analyzer, self._stop, settings=settings)
+            def report_finding(finding):
+                self.on_finding({**finding, "id": f"{record['id']}:{len(session.findings)}",
+                                 "job_id": record["id"]}, camera)
+
+            session = VisionSession(analyzer, self._stop, settings=settings,
+                                    on_finding=report_finding if self.on_finding else None)
             if settings:
                 self._save(record, inference_fps=settings.sample_fps, window_frames=settings.window_frames)
             if suffix in SUPPORTED_IMAGES:

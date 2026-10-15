@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from io import BytesIO
 import os
+import re
 from pathlib import Path
 from threading import Lock
 
@@ -19,6 +20,23 @@ PROMPT = (
     "If motion or contact is unclear, explicitly say uncertain and describe what is visible. "
     "Do not infer intent or identity."
 )
+
+ALERT_FORMAT = (
+    "\nRequired output format: first line exactly DANGER: yes, DANGER: no, or DANGER: uncertain. "
+    "Then describe the visible evidence in one or two sentences. Use yes only for clearly visible "
+    "danger such as physical assault (punching, kicking, violent pushing), fire, or a person falling "
+    "or visibly in distress. Ordinary walking, talking, play, proximity, and unclear contact are not "
+    "confirmed danger. If evidence is ambiguous use uncertain. Do not infer intent or identity. "
+    "This format is required even if earlier instructions request a different format."
+)
+
+
+def parse_danger_result(text: str) -> tuple[str, str]:
+    """Accept only an explicit first-line decision with nonempty evidence; never keyword-match prose."""
+    match = re.fullmatch(r"DANGER: (yes|no|uncertain)\s*\n(.+)", text.strip(), re.DOTALL)
+    if not match or not match[2].strip() or re.search(r"(?im)^\s*DANGER:", match[2]):
+        return "uncertain", text.strip()
+    return match[1], match[2].strip()
 
 
 class SmolVLM2Analyzer:
@@ -70,7 +88,7 @@ class SmolVLM2Analyzer:
             raise ModelBusy("model is busy; waiting for the next analysis window")
         try:
             settings = self.settings_provider() if self.settings_provider else None
-            prompt = settings.prompt if settings else PROMPT
+            prompt = (settings.prompt if settings else PROMPT) + ALERT_FORMAT
             max_new_tokens = settings.max_new_tokens if settings else self.max_new_tokens
             self._load()
             import torch
@@ -113,7 +131,8 @@ class SmolVLM2Analyzer:
                 output[:, inputs["input_ids"].shape[-1]:], skip_special_tokens=True)[0].strip()
             if not description:
                 raise RuntimeError("model returned an empty analysis")
+            danger_status, description = parse_danger_result(description)
             return VisualFinding(description, MODEL_ID, MODEL_REVISION, frames[0].offset_seconds,
-                                 frames[-1].offset_seconds, len(frames))
+                                 frames[-1].offset_seconds, len(frames), danger_status=danger_status)
         finally:
             self._lock.release()

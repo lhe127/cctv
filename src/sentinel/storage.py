@@ -164,6 +164,32 @@ class JsonStateStore:
         with self._lock:
             return self._read().get("findings", [])[-self.max_events:]
 
+    def create_alert(self, alert: dict) -> dict:
+        with self._lock:
+            value = self._read()
+            alerts = value.setdefault("alerts", [])
+            existing = next((item for item in alerts if item["id"] == alert["id"]), None)
+            if existing is not None:
+                return existing
+            alerts.append(alert)
+            self._write(value)
+            return alert
+
+    def list_alerts(self) -> list[dict]:
+        with self._lock:
+            return list(reversed(self._read().get("alerts", [])))
+
+    def set_alert_status(self, alert_id: str, status: str, at: str) -> dict:
+        with self._lock:
+            value = self._read()
+            alert = next((item for item in value.get("alerts", []) if item["id"] == alert_id), None)
+            if alert is None:
+                raise KeyError(alert_id)
+            if alert["status"] != status:
+                alert.update(status=status, updated_at=at, resolved_at=at if status == "resolved" else None)
+                self._write(value)
+            return alert
+
     def append_finding(self, finding: dict) -> None:
         with self._lock:
             value = self._read()

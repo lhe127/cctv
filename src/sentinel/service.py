@@ -31,7 +31,9 @@ class FindingStore(Protocol):
 class MonitorService:
     def __init__(self, max_events: int = 1000, event_store: EventStore | None = None,
                  tracker_factory: Callable[[], Tracker] = CentroidTracker,
-                 finding_store: FindingStore | None = None) -> None:
+                 finding_store: FindingStore | None = None,
+                 on_finding: Callable[[dict, Camera | None], object] | None = None) -> None:
+        self._on_finding = on_finding
         self._lock = RLock()
         self._event_store = event_store
         self._finding_store = finding_store
@@ -73,6 +75,10 @@ class MonitorService:
             observed_at = datetime.now(timezone.utc).isoformat()
             item = {**finding.public(), "id": str(uuid4()), "camera_id": camera_id,
                     "observed_at": observed_at}
+            # Persist a danger alert first: a subsequent findings-history failure must
+            # not lose the incident log. Alert storage deduplicates by finding ID.
+            if self._on_finding:
+                self._on_finding(item, self._cameras[camera_id])
             if self._finding_store:
                 self._finding_store.append_finding(item)
             self._findings.append(item)

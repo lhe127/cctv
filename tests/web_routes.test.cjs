@@ -11,9 +11,9 @@ async function loadRoute(route) {
   const elements = new Map();
   function element(id) {
     if (!elements.has(id)) elements.set(id, {
-      innerHTML: '', textContent: '', dataset: {},
+      innerHTML: '', textContent: '', dataset: {},value:'all',
       classList: {add() {}, toggle() {}},
-      addEventListener() {}, focus() {}, append() {},
+      addEventListener() {}, focus() {}, append() {},scrollIntoView() {},
       querySelector: element, querySelectorAll: () => [],
     });
     return elements.get(id);
@@ -26,14 +26,16 @@ async function loadRoute(route) {
       createElement: () => element('toast'),
     },
     window: {
-      location: {pathname: `/${route}`, replace() { throw new Error('Unexpected redirect'); }},
-      addEventListener() {}, setTimeout() {},
-      SentinelResidentialMap: {async mount(canvas, options) { mounts.push({canvas, options}); }},
+      location: {pathname: `/${route}`,hash:'', replace() { throw new Error('Unexpected redirect'); }},
+      addEventListener() {}, setTimeout() {},setInterval() {return 1;},clearInterval() {},
+      SentinelResidentialMap: {async mount(canvas, options) { mounts.push({canvas, options});return {setAlerts() {},select() {}}; }},
     },
     sessionStorage: {getItem: () => 'fixture-key'},
     CSS: {escape: value => value},
     fetch: async url => {
-      assert.ok(['/api/v1/summary', '/api/v1/cameras', '/api/v1/settings'].includes(url), url);
+      assert.ok(['/api/v1/summary', '/api/v1/cameras', '/api/v1/settings', '/api/v1/findings', '/api/v1/alerts', '/api/v1/alerts?status=pending'].includes(url), url);
+      if(url.startsWith('/api/v1/alerts'))return {status:200,ok:true,json:async()=>[{id:'test-alert',status:'pending',description:'<unsafe>',camera_name:'Gate',created_at:'2026-10-15T00:00:00Z',start_seconds:0,end_seconds:3.5,map_position:null}]};
+      if(url==='/api/v1/findings')return {status:200,ok:true,json:async()=>[]};
       if(url.endsWith('/settings'))return {status:200,ok:true,json:async()=>({prompt:'<safe prompt>',sample_fps:2,window_frames:8,max_new_tokens:96,preview_fps:5})};
       return {status: 200, ok: true, json: async () => url.endsWith('/cameras') ? cameras : {camera_count: 1}};
     },
@@ -59,6 +61,8 @@ test('Map route mounts the renderer with camera data and updates the inspector',
   assert.match(html, /Site directory/);
   assert.match(html, /Not placed/);
   assert.match(html, /Plan coordinates/);
+  assert.match(element('#map-pending-alerts').innerHTML,/&lt;unsafe&gt;/);
+  assert.match(element('#map-pending-alerts').innerHTML,/Unplaced/);
   assert.equal(mounts.length, 1);
   assert.equal(mounts[0].canvas, element('#residential-map-canvas'));
   assert.equal(mounts[0].options.cameras, cameras);
@@ -66,6 +70,14 @@ test('Map route mounts the renderer with camera data and updates the inspector',
     description: 'Pool area', state: 'Site overview', facts: [['Label', '<unsafe>']]});
   assert.equal(element('#map-inspector-title').textContent, 'Swimming pool');
   assert.match(element('#map-inspector-facts').innerHTML, /&lt;unsafe&gt;/);
+});
+
+test('Alerts route renders escaped pending alerts and status actions', async () => {
+  const {html,element}=await loadRoute('alerts');
+  assert.match(html,/Danger alerts/);
+  assert.match(element('#danger-alert-list').innerHTML,/&lt;unsafe&gt;/);
+  assert.match(element('#danger-alert-list').innerHTML,/Mark resolved/);
+  assert.match(element('#danger-alert-list').innerHTML,/Unplaced/);
 });
 
 test('Settings route loads escaped prompt and bounded analysis controls', async () => {

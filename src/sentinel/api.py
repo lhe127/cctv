@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 from .algorithm_test import AlgorithmTestRunner
+from .alerts import AlertService
 from .domain import Camera, Detection, Kind, Rule, Zone, MapPosition
 from .settings import AnalysisSettings, JsonSettingsStore
 from .service import MonitorService
@@ -36,6 +37,7 @@ class FindingOutput(BaseModel):
     end_seconds: float
     frames_analyzed: int
     review_required: bool
+    danger_status: Literal["yes", "no", "uncertain"] = "uncertain"
     id: str | None = None
     camera_id: str | None = None
     observed_at: str | None = None
@@ -86,6 +88,31 @@ class ZoneInput(BaseModel):
 class MapPositionInput(BaseModel):
     x: float = Field(ge=-80, le=80, allow_inf_nan=False)
     y: float = Field(ge=-55, le=55, allow_inf_nan=False)
+
+
+class AlertUpdate(BaseModel):
+    status: Literal["pending", "resolved"]
+
+
+class AlertOutput(BaseModel):
+    id: str
+    finding_id: str
+    camera_id: str | None
+    camera_name: str | None
+    map_position: MapPositionInput | None
+    source: Literal["camera", "media_job"]
+    job_id: str | None
+    description: str
+    model: str
+    revision: str
+    start_seconds: float
+    end_seconds: float
+    frames_analyzed: int
+    review_required: bool
+    status: Literal["pending", "resolved"]
+    created_at: str
+    updated_at: str
+    resolved_at: str | None
 
 
 class CameraInput(BaseModel):
@@ -158,10 +185,12 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
     state_value = data_path or os.getenv("SENTINEL_DATA_FILE")
     state_path = Path(state_value) if state_value else project_root / "data" / "sentinel-state.json"
     state_store = JsonStateStore(state_path)
+    alert_service = AlertService(state_store)
     tracker_kind = "disabled"
     inference_fps = 0.5
     tracker_factory = CentroidTracker
-    service = MonitorService(event_store=state_store, tracker_factory=tracker_factory, finding_store=state_store)
+    service = MonitorService(event_store=state_store, tracker_factory=tracker_factory, finding_store=state_store,
+                             on_finding=alert_service.record_finding)
     for camera in camera_repository.load():
         service.add_camera(camera)
 
@@ -178,7 +207,8 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
 
     controller = CaptureController(service, analyzer_factory, settings_provider=settings_store.get)
     algorithm_runner = AlgorithmTestRunner(analyzer_factory, state_store, state_path.parent / "algorithm-results",
-                                          inference_fps=inference_fps, settings_provider=settings_store.get)
+                                          inference_fps=inference_fps, settings_provider=settings_store.get,
+                                          on_finding=alert_service.record_finding)
     config_lock = asyncio.Lock()
 
     async def authorize(x_api_key: str | None = Header(default=None)) -> None:
@@ -203,6 +233,7 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
     app.state.service = service
     app.state.controller = controller
     app.state.algorithm_runner = algorithm_runner
+    app.state.alert_service = alert_service
 
     @app.get("/health")
     async def health():
@@ -232,7 +263,7 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
         return {
             "camera_count": len(states),
             "online_count": sum(item["state"] in {"starting", "running"} for item in states),
-            "alert_count": len(service.events()),
+            "alert_count": len(alert_service.list("pending")),
             "detection_count": 0,
             "finding_count": len(service.findings()),
             "algorithm_test_count": len(algorithm_runner.list()),
@@ -245,7 +276,24 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
     @app.get("/api/v1/capabilities", dependencies=[Depends(authorize)])
     async def capabilities():
         return {"items": CAPABILITIES, "tracker": tracker_kind, "inference_fps": settings_store.get().sample_fps,
-                "test_duration_limit_seconds": 60, "model": MODEL_ID, "automatic_alerts": False}
+                "test_duration_limit_seconds": 60, "model": MODEL_ID, "automatic_alerts": True,
+                "alert_review_required": True}
+
+    @app.get("/api/v1/alerts", response_model=list[AlertOutput], dependencies=[Depends(authorize)])
+    async def list_alerts(status: Literal["pending", "resolved"] | None = None):
+        try:
+            return await asyncio.to_thread(alert_service.list, status)
+        except OSError:
+            raise HTTPException(status_code=503, detail="could not read alerts")
+
+    @app.patch("/api/v1/alerts/{alert_id}", response_model=AlertOutput, dependencies=[Depends(authorize)])
+    async def update_alert(alert_id: str, payload: AlertUpdate):
+        try:
+            return await asyncio.to_thread(alert_service.set_status, alert_id, payload.status)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="alert not found")
+        except OSError:
+            raise HTTPException(status_code=503, detail="could not save alert status")
 
     @app.get("/api/v1/cameras/{camera_id}", dependencies=[Depends(authorize)])
     async def camera_detail(camera_id: str):

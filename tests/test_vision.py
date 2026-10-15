@@ -117,7 +117,8 @@ def test_api_jobs_and_persisted_findings(tmp_path):
                 assert (await client.get('/api/v1/findings')).status_code == 401
                 assert (await client.get('/api/v1/findings?camera_id=missing', headers=headers)).status_code == 404
                 caps = (await client.get('/api/v1/capabilities', headers=headers)).json()
-                assert caps['automatic_alerts'] is False
+                assert caps['automatic_alerts'] is True
+                assert caps['alert_review_required'] is True
                 assert caps['tracker'] == 'disabled'
                 assert not any('rule' in item for item in caps['items'])
                 _, image = cv2.imencode('.jpg', np.zeros((16, 16, 3), np.uint8))

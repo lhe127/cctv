@@ -29,6 +29,11 @@ class VisualFinding:
     end_seconds: float
     frames_analyzed: int
     review_required: bool = True
+    danger_status: str = "uncertain"
+
+    def __post_init__(self) -> None:
+        if self.danger_status not in {"yes", "no", "uncertain"}:
+            raise ValueError("danger_status must be yes, no, or uncertain")
 
     def public(self) -> dict:
         return asdict(self)

@@ -1,6 +1,6 @@
 ﻿# Township Sentinel
 
-Local camera preview and image/video analysis using **HuggingFaceTB/SmolVLM2-500M-Video-Instruct**. SmolVLM2 is the only active model. It returns timestamped descriptions for human review; unsupported tracking and automatic behavior alerts have been removed from the active dashboard.
+Local camera preview and image/video analysis using **HuggingFaceTB/SmolVLM2-500M-Video-Instruct**. SmolVLM2 is the only active model. It returns timestamped descriptions and explicit danger flags for human review. Tracking and legacy zone-rule detection remain disabled.
 
 ## Setup in the existing virtual environment
 
@@ -29,7 +29,7 @@ Open `http://127.0.0.1:8000/`. If you do not have a local camera config, use `co
 - The camera page and Review findings page show descriptions, sample windows, and analysis state. The model does not provide validated boxes, persistent IDs, exact counts, or reliable safety triggers.
 - The media lab accepts JPG, PNG, WEBP, MP4, MOV, AVI, and MKV, up to 100 MB. Videos are limited to the first 60 seconds, with a maximum 4K source resolution. Source previews are JPEG or silent VP8/WebM; findings appear alongside playback. Uploaded input files are deleted when jobs finish.
 
-Model outputs can be incorrect. A description is a review aid and does not establish that a scene is safe. No automatic intrusion, loitering, climbing, tampering, pool, crowd, parking, unattended-object, fighting, fall, fire, or drowning alerts run in this version.
+Model outputs can be incorrect. A description or a `no` result does not establish that a scene is safe. Explicit model danger flags now create review alerts; this is not a validated detector for particular incident types. No physical response is automated, and legacy intrusion, loitering, climbing, tampering, pool, crowd, parking, and unattended-object rule engines remain inactive.
 
 ## Configuration
 
@@ -71,6 +71,8 @@ All `/api/v1` requests require `X-API-Key`. OpenAPI is available at `/docs`.
 | GET | `/api/v1/cameras/{id}/snapshot` | JPEG preview |
 | GET | `/api/v1/cameras/{id}/stream` | MJPEG preview |
 | GET | `/api/v1/events` | Read historical alerts |
+| GET | `/api/v1/alerts?status=pending` | List model-danger alerts; optional pending/resolved filter |
+| PATCH | `/api/v1/alerts/{id}` | Set `{"status":"resolved"}` or `{"status":"pending"}` |
 
 The `/api/v1/algorithm-tests` routes remain media-job aliases, including authenticated preview downloads at `/{id}/result`. `/observations` returns 410 because object observation ingestion is retired. Stored legacy zone configuration remains editable through its existing API for compatibility but has no effect on analysis.
 
@@ -106,3 +108,15 @@ Open **Settings** to edit the VLM prompt, sampled frames per second (0.25–10),
 `GET` and `PUT /api/v1/settings` require `X-API-Key` and administrator authorization. Set `SENTINEL_ADMIN_API_KEY` before server startup to require a separate `X-Admin-Key` for settings (enter it on the Settings page; it is not stored in browser storage). Without it, the existing API key retains local-owner access. This is shared-key access, not a multi-user role system. Settings persist atomically in `<state-file-stem>-settings.json` beside `SENTINEL_DATA_FILE`. Invalid files fail startup rather than silently discarding settings. Persisted preview settings override `SENTINEL_PREVIEW_FPS`; that environment variable supplies the initial default. Model path/device remain environment settings requiring restart. Run only one API process against these local JSON files.
 
 No new runtime dependencies or external map/model assets were introduced. Existing map architecture is documented in [ADR 004](docs/adr-004-architectural-map.md).
+
+## Danger-alert lifecycle
+
+The local model adapter appends a required output contract to the editable prompt: first line `DANGER: yes`, `DANGER: no`, or `DANGER: uncertain`, followed by visible evidence. The guidance includes clearly visible assault, fire, falling, or distress, excludes ordinary activity, and asks for uncertainty when ambiguous. Only a valid explicit `yes` with nonempty evidence invokes `AlertService.record_finding`. Missing, malformed, conflicting headers and uncertain outputs do not create alerts. Free-text keywords alone never trigger alerts. Findings expose `danger_status`; older findings default to `uncertain` and are not retroactively classified.
+
+Live camera findings and uploaded-media analyses use the same alert function immediately after each analyzed window. Alerts already recorded remain available even if a later window or preview encoding fails. Every flagged analysis window creates a separate pending alert, deduplicated by finding ID; neighboring windows are not automatically merged into an incident. Uploaded media is labeled as such (an old clip is not a live event). Its alert timestamp is processing time, and offsets refer to the source clip. An upload associated with a camera uses that camera's configuration captured at submission; unassociated uploads remain unplaced.
+
+Open **Alerts & review** to filter all/pending/resolved, mark an alert resolved, or reopen it. The API key grants these operator actions; the separate admin key remains specific to analysis settings. Status and UTC timestamps persist atomically in the existing state JSON. Retrying the same status is idempotent, and redelivery of a finding cannot reopen a resolved alert. This shared-key prototype does not identify individual resolvers or provide a full audit trail of past status transitions.
+
+The map polls pending alerts every five seconds while visible. It groups colocated alerts into counted red pins independently of the camera-pin toggle, and lists every pending alert in its sidebar. Unplaced alerts are explicitly listed without invented coordinates. Locations and camera names are snapshots at detection/submission time, preserved after moving or deleting cameras; later coordinate edits do not relocate historical incidents. Resolving removes a marker on the next refresh, unless other pending alerts remain there. Refresh failures display a stale-data warning.
+
+Alert history is retained separately from the bounded findings history and is not silently truncated, including unresolved alerts. Monitor state-file growth; larger deployments need a database, pagination, retention policy, and per-user authorization. No new dependencies were introduced. Automated tests and fixture-backed browser checks verify the workflow, not real-world model accuracy or reliability of format compliance. Treat all danger alerts as review requests, not verified emergencies. Restart the backend after upgrading; existing settings and legacy event history remain compatible.
