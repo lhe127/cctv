@@ -30,6 +30,7 @@ class VisualFinding:
     frames_analyzed: int
     review_required: bool = True
     danger_status: str = "uncertain"
+    analysis_warning: str | None = None
 
     def __post_init__(self) -> None:
         if self.danger_status not in {"yes", "no", "uncertain"}:

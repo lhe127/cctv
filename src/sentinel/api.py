@@ -11,7 +11,10 @@ from pathlib import Path
 from time import time
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -19,14 +22,19 @@ from pydantic import BaseModel, Field, field_validator
 from .algorithm_test import AlgorithmTestRunner
 from .alerts import AlertService
 from .domain import Camera, Detection, Kind, Rule, Zone, MapPosition
-from .settings import AnalysisSettings, JsonSettingsStore
+from .settings import SettingsUpdate, SettingsOutput, JsonSettingsStore, public_settings
+from .qwen import ConfiguredAnalyzer
 from .service import MonitorService
 from .storage import JsonCameraRepository, JsonStateStore
 from .video import CaptureController
-from .smolvlm import SmolVLM2Analyzer, MODEL_ID
+from .smolvlm import SmolVLM2Analyzer, MODEL_ID, PROMPT
 from .vision import VisionAnalyzer
 from .tracking import CentroidTracker
 from .capabilities import CAPABILITIES
+
+
+class EvidenceFrameOutput(BaseModel):
+    offset_seconds: float
 
 
 class FindingOutput(BaseModel):
@@ -38,6 +46,8 @@ class FindingOutput(BaseModel):
     frames_analyzed: int
     review_required: bool
     danger_status: Literal["yes", "no", "uncertain"] = "uncertain"
+    analysis_warning: str | None = None
+    evidence_frames: list[EvidenceFrameOutput] = Field(default_factory=list)
     id: str | None = None
     camera_id: str | None = None
     observed_at: str | None = None
@@ -55,6 +65,7 @@ class AnalysisJobOutput(BaseModel):
     frames_processed: int
     warnings: list[str] = Field(default_factory=list)
     error: str | None = None
+    map_position: MapPositionInput | None = None
 
 
 class DetectionInput(BaseModel):
@@ -200,7 +211,7 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
 
     settings_store = JsonSettingsStore(state_path.with_name(state_path.stem + "-settings.json"))
     admin_secret = os.getenv("SENTINEL_ADMIN_API_KEY") or secret
-    vision_analyzer = analyzer or SmolVLM2Analyzer(settings_provider=settings_store.get)
+    vision_analyzer = analyzer or ConfiguredAnalyzer(settings_store.get, SmolVLM2Analyzer())
 
     def analyzer_factory():
         return vision_analyzer
@@ -235,23 +246,36 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
     app.state.algorithm_runner = algorithm_runner
     app.state.alert_service = alert_service
 
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request, error):
+        if request.url.path == "/api/v1/settings":
+            return JSONResponse(status_code=422, content={"detail": "Invalid settings. Check field formats and limits."})
+        return await request_validation_exception_handler(request, error)
+
     @app.get("/health")
     async def health():
         return {"status": "ok"}
 
-    @app.get("/api/v1/settings", response_model=AnalysisSettings,
+    @app.get("/api/v1/settings", response_model=SettingsOutput,
              dependencies=[Depends(authorize), Depends(authorize_admin)])
     async def get_settings():
-        return settings_store.get()
+        return public_settings(settings_store.get())
 
-    @app.put("/api/v1/settings", response_model=AnalysisSettings,
+    @app.get("/api/v1/settings/surveillance-prompt", response_model=dict[str, str],
              dependencies=[Depends(authorize), Depends(authorize_admin)])
-    async def save_settings(payload: AnalysisSettings):
+    async def surveillance_prompt():
+        return {"prompt": PROMPT}
+
+    @app.put("/api/v1/settings", response_model=SettingsOutput,
+             dependencies=[Depends(authorize), Depends(authorize_admin)])
+    async def save_settings(payload: SettingsUpdate):
         try:
-            await asyncio.to_thread(settings_store.save, payload)
+            saved = await asyncio.to_thread(settings_store.update, payload)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
         except OSError:
             raise HTTPException(status_code=503, detail="could not save analysis settings")
-        return payload
+        return public_settings(saved)
 
     @app.post("/api/v1/session", dependencies=[Depends(authorize)])
     async def create_session():
@@ -276,7 +300,9 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
     @app.get("/api/v1/capabilities", dependencies=[Depends(authorize)])
     async def capabilities():
         return {"items": CAPABILITIES, "tracker": tracker_kind, "inference_fps": settings_store.get().sample_fps,
-                "test_duration_limit_seconds": 60, "model": MODEL_ID, "automatic_alerts": True,
+                "test_duration_limit_seconds": 60,
+                "model": settings_store.get().qwen_model if settings_store.get().qwen_enabled else MODEL_ID,
+                "automatic_alerts": True,
                 "alert_review_required": True}
 
     @app.get("/api/v1/alerts", response_model=list[AlertOutput], dependencies=[Depends(authorize)])
@@ -462,7 +488,12 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
     @app.post("/api/v1/algorithm-tests", status_code=status.HTTP_202_ACCEPTED,
               dependencies=[Depends(authorize)])
     async def create_algorithm_test(request: Request, x_filename: str | None = Header(default=None),
-                                    camera_id: str | None = None):
+                                    camera_id: str | None = None,
+                                    map_x: float | None = Query(default=None, ge=-80, le=80, allow_inf_nan=False),
+                                    map_y: float | None = Query(default=None, ge=-55, le=55, allow_inf_nan=False)):
+        if (map_x is None) != (map_y is None):
+            raise HTTPException(status_code=422, detail="Provide both map_x and map_y, or leave both blank")
+        map_position = MapPosition(map_x, map_y) if map_x is not None else None
         if not x_filename:
             raise HTTPException(status_code=422, detail="X-Filename header is required")
         camera = next((item for item in service.cameras() if item.id == camera_id), None) if camera_id else None
@@ -479,7 +510,7 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
             raise HTTPException(status_code=413, detail="file exceeds the 100 MB limit")
         try:
             return await asyncio.to_thread(algorithm_runner.submit, x_filename,
-                request.headers.get("content-type", "application/octet-stream"), bytes(payload), camera)
+                request.headers.get("content-type", "application/octet-stream"), bytes(payload), camera, map_position)
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error))
         except RuntimeError as error:
@@ -511,6 +542,17 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
             raise HTTPException(status_code=409, detail=str(error))
         except FileNotFoundError as error:
             raise HTTPException(status_code=410, detail=str(error))
+
+    @app.get("/api/v1/analysis-jobs/{test_id}/findings/{finding_index}/frames/{frame_index}",
+             dependencies=[Depends(authorize)])
+    async def analysis_evidence_frame(test_id: str, finding_index: int, frame_index: int):
+        try:
+            path = await asyncio.to_thread(algorithm_runner.evidence_frame, test_id, finding_index, frame_index)
+            return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, no-store"})
+        except KeyError:
+            raise HTTPException(status_code=404, detail="frame evidence not found")
+        except FileNotFoundError:
+            raise HTTPException(status_code=410, detail="frame evidence is unavailable")
 
     web_directory = Path(__file__).with_name("web")
     app.mount("/static", StaticFiles(directory=web_directory), name="static")
@@ -545,8 +587,7 @@ def run() -> None:
     import uvicorn
     logging.basicConfig(level=os.getenv("SENTINEL_LOG_LEVEL", "INFO").upper(),
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    logging.getLogger("sentinel").info("Starting local console; model=SmolVLM2 preview=%s FPS sample_interval=0.5s",
-                                     os.getenv("SENTINEL_PREVIEW_FPS", "5"))
+    logging.getLogger("sentinel").info("Starting console; analysis provider and sampling are controlled by Settings")
     uvicorn.run(create_app(), host="127.0.0.1", port=int(os.getenv("SENTINEL_PORT", "8000")), access_log=False)
 
 

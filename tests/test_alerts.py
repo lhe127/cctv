@@ -27,6 +27,13 @@ from sentinel.vision import VisualFinding
     ('DANGER: yes\nVisible contact.\nDANGER: no', 'uncertain'),
     ('DANGER: yes\nVisible contact.\n  DANGER: no', 'uncertain'),
     ('{"danger": true}', 'uncertain'),
+    ('ANGER : yes, DANGER : no.', 'uncertain'),
+    ('DANGER : yes, DANGER : no.', 'uncertain'),
+    ('danger : YES\nEVIDENCE: Flames spread across the roof.', 'yes'),
+    ('ANGER : yes\nFlames are coming from the house.', 'yes'),
+    ('DANGER : no\nEVIDENCE: No flames are visible.', 'no'),
+    ('DANGER: yes/no', 'uncertain'),
+    ('DANGER: yes\nEVIDENCE: [visible observation]', 'uncertain'),
 ])
 def test_explicit_danger_contract(output, status):
     assert parse_danger_result(output)[0] == status

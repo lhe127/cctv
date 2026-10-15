@@ -1,0 +1,20 @@
+"""Editable surveillance criteria, shared by camera and recorded-media analysis."""
+
+SURVEILLANCE_PROMPT = (
+    "Inspect the entire scene for visible hazards, including buildings, vehicles, water and people. "
+    "Report danger if ANY sampled frame clearly shows a hazard; a later calm frame does not erase it. "
+    "Fire: flames on a house, roof, room, vehicle or vegetation, spreading fire, or dense smoke "
+    "coming from a structure. Fire is danger even when no person is visible. "
+    "People: falling or collapsing, lying motionless after a fall, violent punching or kicking, "
+    "or a visible weapon being used to threaten someone. "
+    "Water: a person struggling to stay afloat, repeatedly submerging, or floating motionless; "
+    "describe possible drowning or distress, not a medical certainty. "
+    "Access: climbing over a perimeter wall or fence, forcing a door or window, breaking a lock, "
+    "or visibly removing property after forced entry. Describe the observed action as possible "
+    "intrusion or theft; never label a person a thief or infer criminal intent from appearance. "
+    "Also flag visible vehicle collisions or a person in an immediate vehicle path. "
+    "Ordinary walking, conversation, normal swimming, routine activity, "
+    "reflections, lights and steam alone are not evidence of danger. Do not infer authorization "
+    "from appearance. If the action, smoke source or context is unclear, report uncertain. "
+    "Describe the specific visible hazard and its location briefly. Do not invent unseen events."
+)

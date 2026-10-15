@@ -14,6 +14,51 @@
   const timers = new Set();
   let selectedUpload = null;
   let resultLoadVersion = 0;
+  let evidenceObserver = null;
+  let evidenceRequests = null;
+  const evidenceUrls = new Set();
+
+  function clearEvidence() {
+    evidenceObserver?.disconnect();
+    evidenceRequests?.abort();
+    evidenceUrls.forEach(url => { URL.revokeObjectURL(url); objectUrls.delete(url); });
+    evidenceUrls.clear();
+  }
+
+  function evidenceMarkup(item, index) {
+    if (!item.evidence_frames?.length) return '<p class="evidence-note">Frame evidence was not saved for this result. Run the test again to capture it.</p>';
+    return `<p class="evidence-note">Actual frames analyzed in this window; the model does not pinpoint a single triggering frame.</p><div class="evidence-strip">${item.evidence_frames.map((frame, frameIndex) => `<button type="button" class="evidence-frame" data-evidence="${index}/${frameIndex}" data-seek="${Number(frame.offset_seconds)}" aria-label="View analyzed frame at ${Number(frame.offset_seconds).toFixed(3)} seconds"><img alt="Analyzed frame at ${Number(frame.offset_seconds).toFixed(3)} seconds"><span>${Number(frame.offset_seconds).toFixed(3)}s</span><small class="evidence-status">Loading frame…</small></button>`).join('')}</div>`;
+  }
+
+  function loadEvidence(timeline, id, version) {
+    const controller = new AbortController();
+    evidenceRequests = controller;
+    const queue = [];
+    let active = 0;
+    function pump() {
+      while (active < 4 && queue.length && !controller.signal.aborted) {
+        const button = queue.shift();
+        active++;
+        const [finding, frame] = button.dataset.evidence.split('/');
+        request(`/api/v1/analysis-jobs/${encodeURIComponent(id)}/findings/${finding}/frames/${frame}`, {signal:controller.signal})
+          .then(response => response.blob()).then(blob => {
+            if (version !== resultLoadVersion || controller.signal.aborted) return;
+            const url = rememberUrl(blob); evidenceUrls.add(url);
+            button.querySelector('img').src = url;
+            button.querySelector('.evidence-status').textContent = '';
+          }).catch(() => {
+            if (!controller.signal.aborted) button.querySelector('.evidence-status').textContent = 'Frame unavailable';
+          }).finally(() => { active--; pump(); });
+      }
+    }
+    evidenceObserver = new IntersectionObserver(entries => {
+      for (const entry of entries) if (entry.isIntersecting) {
+        evidenceObserver.unobserve(entry.target); queue.push(entry.target);
+      }
+      pump();
+    }, {rootMargin:'200px'});
+    timeline.querySelectorAll('[data-evidence]').forEach(button => evidenceObserver.observe(button));
+  }
   const ruleLabels = {
     intrusion: 'Restricted-area entry', loitering: 'Loitering', wall_climbing: 'Suspected climbing',
     door_tampering: 'Door-handle activity', pool_safety: 'Pool danger zone', crowd: 'Crowd threshold',
@@ -101,6 +146,11 @@
     return `<span class="state-pill ${escapeHtml(state)}">${state === 'running' ? '<span class="status-dot"></span>' : ''}${escapeHtml(titleCase(state))}</span>`;
   }
 
+  function findingStatus(item) {
+    const label=item.analysis_warning?'Analysis format error — review source':item.danger_status==='yes'?'Danger flagged — review required':item.danger_status==='no'?'No danger flagged in this window':'Uncertain — review source';
+    return `<small class="finding-decision">${escapeHtml(label)}</small>${item.analysis_warning?`<p class="form-error">${escapeHtml(item.analysis_warning)}</p>`:''}`;
+  }
+
   function addTimer(callback, milliseconds) {
     const timer = window.setInterval(callback, milliseconds);
     timers.add(timer);
@@ -162,12 +212,12 @@
       <section class="metric-grid">
         ${metric('Cameras online', `${summary.online_count} / ${summary.camera_count}`, 'Configured monitoring sources', 'camera', '#12a886', '#e7f7f3')}
         ${metric('Pending alerts', summary.alert_count, 'Model flags requiring human review', 'alert', '#d94c5c', '#fff0f2')}
-        ${metric('Analysis model', 'SmolVLM2', 'Local video understanding', 'person', '#3976e8', '#edf3ff')}
+        ${metric('Analysis model', 'Configured VLM', 'Local or Qwen Cloud', 'person', '#3976e8', '#edf3ff')}
         ${metric('Media tests', summary.algorithm_test_count, 'Saved local test runs', 'flask', '#9a6ad9', '#f4effb')}
       </section>
       <section class="content-grid">
         <article class="panel"><div class="panel-head"><div><h3>Camera network</h3><p>Live state across configured sources</p></div><a class="link-button" href="/cameras">View all →</a></div><div class="panel-body camera-list">
-          ${withStates.length ? withStates.map(camera => `<div class="camera-row"><span class="camera-thumb">${icon('camera')}</span><span><strong>${escapeHtml(camera.name)}</strong><small>${escapeHtml(camera.source_label)} · SmolVLM2 analysis</small></span>${statePill(camera.status.state)}</div>`).join('') : '<div class="empty-state"><p>No cameras configured yet.</p><a class="button button-primary" href="/cameras">Add camera</a></div>'}
+          ${withStates.length ? withStates.map(camera => `<div class="camera-row"><span class="camera-thumb">${icon('camera')}</span><span><strong>${escapeHtml(camera.name)}</strong><small>${escapeHtml(camera.source_label)} · Configured VLM analysis</small></span>${statePill(camera.status.state)}</div>`).join('') : '<div class="empty-state"><p>No cameras configured yet.</p><a class="button button-primary" href="/cameras">Add camera</a></div>'}
         </div></article>
         <article class="panel"><div class="panel-head"><div><h3>Recent findings</h3><p>Visual descriptions requiring review</p></div><a class="link-button" href="/alerts">Review all →</a></div><div class="panel-body alert-list">
           ${events.length ? events.slice(0, 6).map(event => `<div class="alert-item"><span class="alert-dot"></span><div><strong>${escapeHtml('Visual analysis')}</strong><p>${escapeHtml(event.description)}</p><time>${escapeHtml(event.camera_id)} · ${formatTime(event.observed_at)}</time></div></div>`).join('') : '<div class="empty-state"><p>No visual findings have been recorded.</p></div>'}
@@ -177,7 +227,7 @@
 
   function cameraCard(camera) {
     return `<article class="camera-card"><div class="camera-card-body">
-      <h3>${escapeHtml(camera.name)}</h3><p>${escapeHtml(camera.source_label)} · SmolVLM2 analysis</p>
+      <h3>${escapeHtml(camera.name)}</h3><p>${escapeHtml(camera.source_label)} · Configured VLM analysis</p>
       ${statePill(camera.status.state)} <a class="button button-primary" href="/cameras/${encodeURIComponent(camera.id)}">Open camera →</a>
     </div></article>`;
   }
@@ -187,7 +237,7 @@
     return `<article class="camera-card" data-camera-card="${escapeHtml(camera.id)}">
       <div class="camera-visual"><span class="camera-placeholder">${icon('camera')}</span><img alt="Live view from ${escapeHtml(camera.name)}" hidden><span class="visual-state">${statePill(camera.status.state)}</span></div>
       <div class="camera-card-body"><div class="camera-title-row"><div><h3>${escapeHtml(camera.name)}</h3><p>${escapeHtml(camera.id)} · ${escapeHtml(camera.source_label)}</p></div><div class="card-menu"><button class="icon-button" data-edit-camera="${escapeHtml(camera.id)}" aria-label="Edit camera">${icon('settings')}</button><button class="icon-button" data-delete-camera="${escapeHtml(camera.id)}" aria-label="Delete camera">${icon('trash')}</button></div></div>
-      <div class="camera-meta"><div><span>Model</span><strong>SmolVLM2</strong></div><div><span>Output</span><strong>Review findings</strong></div></div>
+      <div class="camera-meta"><div><span>Model</span><strong>Configured VLM</strong></div><div><span>Output</span><strong>Review findings</strong></div></div>
       <div class="card-actions"><button class="button ${running ? 'button-secondary' : 'button-primary'}" data-camera-action="${running ? 'stop' : 'start'}" data-camera-id="${escapeHtml(camera.id)}" ${camera.source_type === 'synthetic' ? 'disabled title="Synthetic cameras receive API observations"' : ''}>${running ? 'Stop camera' : camera.source_type === 'synthetic' ? 'Virtual input' : 'Start camera'}</button></div></div>
     </article>`;
   }
@@ -257,7 +307,7 @@
         action.dataset.cameraAction = ['running', 'starting', 'error'].includes(state.state) ? 'stop' : 'start';
         action.textContent = camera.source_type === 'synthetic' ? 'Virtual input' : action.dataset.cameraAction === 'stop' ? 'Stop camera' : 'Start camera';
         content.querySelector('#behavior-grid').innerHTML = `<article class="behavior-tile"><strong>${escapeHtml(state.analysis_state || 'Waiting for frames')}</strong><span>${escapeHtml(state.analysis_error || 'Sampling uses the settings active when this camera started. Explicit danger results create pending alerts requiring review.')}</span></article>`;
-        content.querySelector('#camera-alert-rows').innerHTML = events.length ? events.map(item => `<tr><td>${formatTime(item.observed_at)}</td><td>${Number(item.start_seconds).toFixed(1)}–${Number(item.end_seconds).toFixed(1)}s</td><td>${Number(item.frames_analyzed)}</td><td>${escapeHtml(item.description)}</td></tr>`).join('') : '<tr><td colspan="4">Waiting for the first analysis result.</td></tr>';
+        content.querySelector('#camera-alert-rows').innerHTML = events.length ? events.map(item => `<tr><td>${formatTime(item.observed_at)}</td><td>${Number(item.start_seconds).toFixed(1)}–${Number(item.end_seconds).toFixed(1)}s</td><td>${Number(item.frames_analyzed)}</td><td>${findingStatus(item)}<p>${escapeHtml(item.description)}</p></td></tr>`).join('') : '<tr><td colspan="4">Waiting for the first analysis result.</td></tr>';
         if (!live) { content.querySelector('.camera-visual img').hidden = true; content.querySelector('.camera-placeholder').hidden = false; }
       } catch (error) {
         if (mounted.isConnected) {
@@ -462,13 +512,23 @@
           ['sample_fps','Sampled frames per second',.25,10,.25],['window_frames','Frames per analysis window',1,8,1],
           ['max_new_tokens','Maximum output tokens',16,256,1],['preview_fps','Preview frames per second',1,15,1]
         ].map(([name,label,min,max,step])=>`<div class="form-field"><label for="setting-${name}">${label}</label><input class="input" id="setting-${name}" name="${name}" type="number" min="${min}" max="${max}" step="${step}" value="${value[name]}" required></div>`).join('')}<div class="full"><button class="button button-primary" type="submit">Save settings</button><span id="settings-status" role="status"></span></div></form>`;
+        editor.querySelector('form').insertAdjacentHTML('afterbegin', `<section class="full"><h3>Model provider</h3><label><input type="checkbox" name="qwen_enabled" ${value.qwen_enabled?'checked':''}> Use qwencloud VLM API</label><p>Off: local SmolVLM. On: sampled camera and test images are sent to Alibaba Cloud with the prompt below. Cloud charges and regional data policies apply. No automatic local fallback.</p></section><div class="form-field"><label for="setting-qwen_api_key">API key</label><input class="input" id="setting-qwen_api_key" name="qwen_api_key" type="password" autocomplete="new-password" placeholder="${value.qwen_key_configured?'Configured — blank keeps key':'Enter API key'}"><small>Saved server-side. Protect the settings file. Alternatively set DASHSCOPE_API_KEY.</small><label><input type="checkbox" name="clear_qwen_api_key"> Remove saved key (environment key still applies)</label></div><div class="form-field"><label for="setting-qwen_workspace">Workspace ID</label><input class="input" id="setting-qwen_workspace" name="qwen_workspace" value="${escapeHtml(value.qwen_workspace||'')}" pattern="(?:[a-zA-Z0-9]|-){0,80}"></div><div class="form-field"><label for="setting-qwen_region">Region (must match key/workspace)</label><select class="input" id="setting-qwen_region" name="qwen_region">${[['ap-southeast-1','Singapore'],['cn-beijing','Beijing'],['us-east-1','Virginia'],['eu-central-1','Frankfurt']].map(([id,label])=>`<option value="${id}" ${value.qwen_region===id?'selected':''}>${label}</option>`).join('')}</select></div><div class="form-field"><label for="setting-qwen_model">Qwen vision model</label><input class="input" id="setting-qwen_model" name="qwen_model" value="${escapeHtml(value.qwen_model||'qwen3-vl-plus')}" required><small>Choose a vision-capable model that supports non-thinking output in your region.</small></div><div class="form-field"><label for="setting-qwen_timeout">Cloud timeout (seconds)</label><input class="input" id="setting-qwen_timeout" name="qwen_timeout" type="number" min="5" max="90" value="${value.qwen_timeout||45}" required></div>`);
         editor.querySelector('form').addEventListener('submit',async event=>{
-          event.preventDefault();const form=event.currentTarget,button=form.querySelector('button');
+          event.preventDefault();const form=event.currentTarget,button=form.querySelector('button[type="submit"]');
           const body=Object.fromEntries(new FormData(form));
-          for(const name of ['sample_fps','window_frames','max_new_tokens','preview_fps'])body[name]=Number(body[name]);
+          for(const name of ['sample_fps','window_frames','max_new_tokens','preview_fps','qwen_timeout'])body[name]=Number(body[name]);
+          body.qwen_enabled=form.elements.qwen_enabled.checked;
+          body.clear_qwen_api_key=form.elements.clear_qwen_api_key.checked;
           button.disabled=true;
-          try{await api('/api/v1/settings',{method:'PUT',headers,json:body});content.querySelector('#settings-status').textContent=' Saved. Restart running cameras to apply sampling changes.';toast('Settings saved.');}
+          try{await api('/api/v1/settings',{method:'PUT',headers,json:body});content.querySelector('#settings-status').textContent=' Saved. Restart running cameras to apply sampling changes.';toast('Settings saved.');await load();}
           catch(error){toast(error.message,'error');}finally{button.disabled=false;}
+        });
+        const preset=document.createElement('button');preset.type='button';preset.className='button button-secondary';preset.textContent='Use surveillance prompt';
+        editor.querySelector('#analysis-prompt').before(preset);
+        preset.addEventListener('click',async()=>{
+          if(!window.confirm('Replace the prompt in this form with the surveillance preset? It is not saved until you click Save settings.'))return;
+          try{const result=await api('/api/v1/settings/surveillance-prompt',{headers});editor.querySelector('#analysis-prompt').value=result.prompt;toast('Surveillance prompt loaded. Click Save settings to apply.');}
+          catch(error){toast(error.message,'error');}
         });
       }catch(error){content.querySelector('#settings-editor').replaceChildren();toast(error.message,'error');}
     }
@@ -476,10 +536,11 @@
   }
 
   function algorithmHistoryMarkup(tests) {
-    return tests.length ? tests.map(test => `<article class="test-card"><div><h4>${escapeHtml(test.filename)}</h4><p>${formatTime(test.created_at)} · ${test.frames_processed || 0} frames · ${test.findings?.length || 0} findings</p><p>${escapeHtml(test.camera_name || 'Visual analysis')}</p></div><div>${test.state === 'completed' ? `<button class="button button-secondary" data-test-result="${escapeHtml(test.id)}" data-result-type="${escapeHtml(test.output_media_type)}">View result</button>` : statePill(test.state)}${test.error ? `<p class="form-error">${escapeHtml(test.error)}</p>` : ''}</div></article>`).join('') : '<div class="empty-state"><p>No media tests have been run.</p></div>';
+    return tests.length ? tests.map(test => `<article class="test-card"><div><h4>${escapeHtml(test.filename)}</h4><p>${formatTime(test.created_at)} · ${test.frames_processed || 0} frames · ${test.findings?.length || 0} findings</p><p>${escapeHtml(test.camera_name || 'Visual analysis')} · ${test.map_position ? `Map (${Number(test.map_position.x)}, ${Number(test.map_position.y)})` : 'Unplaced'}</p></div><div>${test.state === 'completed' ? `<button class="button button-secondary" data-test-result="${escapeHtml(test.id)}" data-result-type="${escapeHtml(test.output_media_type)}">View result</button>` : statePill(test.state)}${test.error ? `<p class="form-error">${escapeHtml(test.error)}</p>` : ''}</div></article>`).join('') : '<div class="empty-state"><p>No media tests have been run.</p></div>';
   }
 
   async function loadAlgorithmResult(id, mediaType) {
+    clearEvidence();
     const viewer = content.querySelector('#result-viewer');
     const version = ++resultLoadVersion;
     viewer.innerHTML = '<span class="spinner"></span>';
@@ -497,12 +558,16 @@
         if (metadata.mode === 'visual_analysis') {
           const findings = metadata.findings || [];
           const timeline = content.querySelector('#test-timeline');
-          timeline.innerHTML = `<div class="panel-head"><h3>Analysis timeline</h3><p>Descriptions require review</p></div><div class="panel-body">${(metadata.warnings || []).map(item => `<p>${escapeHtml(item)}</p>`).join('')}${findings.map(item => `<article class="test-card"><div><button class="button button-ghost" data-seek="${Number(item.start_seconds)}">${Number(item.start_seconds).toFixed(1)}–${Number(item.end_seconds).toFixed(1)}s</button><p>${escapeHtml(item.description)}</p><small>${Number(item.frames_analyzed)} sampled frames</small></div></article>`).join('')}</div>`;
+          const flagged=findings.some(item=>item.danger_status==='yes');
+          timeline.innerHTML = `<div class="panel-head"><h3>Analysis timeline</h3><p>${flagged?'Danger flagged in at least one window — review alerts':'No confirmed danger result — review all windows'} · Not a safety guarantee</p></div><div class="panel-body">${(metadata.warnings || []).map(item => `<p>${escapeHtml(item)}</p>`).join('')}${findings.map((item, index) => `<article class="test-card"><div><button class="button button-ghost" data-seek="${Number(item.start_seconds)}">${Number(item.start_seconds).toFixed(1)}–${Number(item.end_seconds).toFixed(1)}s</button>${findingStatus(item)}<p>${escapeHtml(item.description)}</p><small>${Number(item.frames_analyzed)} sampled frames</small>${evidenceMarkup(item, index)}</div></article>`).join('')}</div>`;
           const video = viewer.querySelector('video');
           timeline.querySelectorAll('[data-seek]').forEach(button => {
-            button.disabled = !video;
-            button.addEventListener('click', () => { video.currentTime = Number(button.dataset.seek); });
+            button.addEventListener('click', () => {
+              if (video) { video.pause(); video.currentTime = Number(button.dataset.seek); }
+              viewer.scrollIntoView({behavior:'smooth', block:'center'});
+            });
           });
+          loadEvidence(timeline, id, version);
           return;
         }
       const events = metadata.events || [];
@@ -536,11 +601,12 @@
 
   async function renderAlgorithmTest() {
     const [tests, cameras, capabilities] = await Promise.all([api('/api/v1/algorithm-tests'), api('/api/v1/cameras'), api('/api/v1/capabilities')]);
-    content.innerHTML = `<div class="section-head"><div><h2>Algorithm test lab</h2><p>Analyze images and recorded video with the same local SmolVLM2 model used by cameras.</p></div><span class="state-pill">Images + videos</span></div><section class="test-layout"><div><div id="upload-zone" class="upload-zone"><span class="upload-icon">${icon('upload')}</span><h3>Drop a picture or video here</h3><p>JPG, PNG, WEBP, MP4, MOV, AVI, or MKV. Videos are bounded to the first 60 seconds.</p><input id="media-file" type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/x-msvideo,video/x-matroska" hidden><button id="choose-file" class="button button-secondary">Choose media</button><div id="selected-file" class="selected-file"></div></div><button id="run-test" class="button button-primary" style="width:100%;margin-top:12px" disabled>Run algorithm test</button></div><article class="panel"><div class="panel-head"><div><h3>Result viewer</h3><p>Source playback with an analysis timeline</p></div></div><div class="panel-body"><div id="result-viewer" class="result-viewer"><p>Select a completed test to inspect its output.</p></div></div></article></section><article class="panel" style="margin-top:20px"><div class="panel-head"><div><h3>Test history</h3><p>Stored locally with result metadata</p></div></div><div id="test-history" class="panel-body test-history">${algorithmHistoryMarkup(tests)}</div></article>`;
+    content.innerHTML = `<div class="section-head"><div><h2>Algorithm test lab</h2><p>Analyze images and recorded video with the same configured VLM and prompt used by cameras.</p></div><span class="state-pill">Images + videos</span></div><section class="test-layout"><div><div id="upload-zone" class="upload-zone"><span class="upload-icon">${icon('upload')}</span><h3>Drop a picture or video here</h3><p>JPG, PNG, WEBP, MP4, MOV, AVI, or MKV. Videos are bounded to the first 60 seconds.</p><input id="media-file" type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/x-msvideo,video/x-matroska" hidden><button id="choose-file" class="button button-secondary">Choose media</button><div id="selected-file" class="selected-file"></div></div><button id="run-test" class="button button-primary" style="width:100%;margin-top:12px" disabled>Run algorithm test</button></div><article class="panel"><div class="panel-head"><div><h3>Result viewer</h3><p>Source playback with an analysis timeline</p></div></div><div class="panel-body"><div id="result-viewer" class="result-viewer"><p>Select a completed test to inspect its output.</p></div></div></article></section><article class="panel" style="margin-top:20px"><div class="panel-head"><div><h3>Test history</h3><p>Stored locally with result metadata</p></div></div><div id="test-history" class="panel-body test-history">${algorithmHistoryMarkup(tests)}</div></article>`;
     const zone = content.querySelector('#upload-zone');
     zone.insertAdjacentHTML('beforebegin', '<p class="analysis-prompt-note">Uses the shared danger criteria from <a href="/settings">Settings → VLM prompt</a>. Detected danger creates a pending alert in <a href="/alerts">Alerts &amp; review</a>, including for uploaded media.</p>');
     content.querySelector('.test-layout').insertAdjacentHTML('afterend', '<section class="panel" id="test-timeline" style="margin-top:20px"></section>');
     const input = content.querySelector('#media-file');
+    zone.insertAdjacentHTML('afterend', '<fieldset class="form-grid" style="margin-top:16px"><legend>Test location (optional)</legend><div class="form-field"><label for="test-map-x">Map X</label><input class="input" id="test-map-x" type="number" min="-80" max="80" step="any" placeholder="-80 to 80"></div><div class="form-field"><label for="test-map-y">Map Y</label><input class="input" id="test-map-y" type="number" min="-55" max="55" step="any" placeholder="-55 to 55"></div><p class="full">Map center is (0, 0). Enter both coordinates to place this test’s danger alerts on the residential map. Leave both blank for an unplaced test.</p></fieldset>');
     const run = content.querySelector('#run-test');
     const choose = content.querySelector('#choose-file');
     function select(file) {
@@ -554,9 +620,13 @@
     zone.addEventListener('drop', event => select(event.dataTransfer.files[0]));
     run.addEventListener('click', async () => {
       if (!selectedUpload) return;
+      const x = content.querySelector('#test-map-x'), y = content.querySelector('#test-map-y');
+      if (!x.reportValidity() || !y.reportValidity()) return;
+      if ((x.value === '') !== (y.value === '')) { toast('Enter both X and Y, or leave both blank.', 'error'); return; }
+      const location = x.value === '' ? '' : '?' + new URLSearchParams({map_x:x.value, map_y:y.value});
       run.disabled = true; run.textContent = 'Uploading…';
       try {
-        await api('/api/v1/analysis-jobs', {method: 'POST', body: selectedUpload, headers: {'Content-Type': selectedUpload.type || 'application/octet-stream', 'X-Filename': selectedUpload.name.replace(/[^a-zA-Z0-9._-]/g, '_')}});
+        await api('/api/v1/analysis-jobs' + location, {method: 'POST', body: selectedUpload, headers: {'Content-Type': selectedUpload.type || 'application/octet-stream', 'X-Filename': selectedUpload.name.replace(/[^a-zA-Z0-9._-]/g, '_')}});
         toast('Test queued. Processing continues in the background.'); select(null); run.textContent = 'Run algorithm test';
         await refreshAlgorithmHistory();
       } catch (error) { toast(error.message, 'error'); run.disabled = false; run.textContent = 'Run algorithm test'; }

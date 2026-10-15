@@ -3,7 +3,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Protocol
 
-from .domain import Camera
+from .domain import Camera, MapPosition
 
 
 class AlertStore(Protocol):
@@ -21,11 +21,14 @@ class AlertService:
         if finding.get("danger_status") != "yes":
             return None
         now = finding.get("observed_at") or datetime.now(timezone.utc).isoformat()
+        position = camera.map_position if camera else None
+        if finding.get("job_id") and finding.get("map_position") is not None:
+            position = MapPosition(**finding["map_position"])
         return self.store.create_alert({
             "id": finding["id"], "finding_id": finding["id"],
             "camera_id": camera.id if camera else finding.get("camera_id"),
             "camera_name": camera.name if camera else None,
-            "map_position": asdict(camera.map_position) if camera and camera.map_position else None,
+            "map_position": asdict(position) if position else None,
             "source": "media_job" if finding.get("job_id") else "camera",
             "job_id": finding.get("job_id"), "description": finding["description"],
             "model": finding["model"], "revision": finding["revision"],

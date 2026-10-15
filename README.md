@@ -111,9 +111,46 @@ No new runtime dependencies or external map/model assets were introduced. Existi
 
 ## Danger-alert lifecycle
 
+### Analysis timeline frame evidence
+
+Algorithm tests accept optional **Map X / Map Y** coordinates (center 0,0;
+X −80…80, Y −55…55). Enter both or neither. The submitted location is saved
+with the job and its pending danger alerts, so the map can display them without
+creating a camera. Existing results are not relocated. The upload APIs accept
+`?map_x=12&map_y=-8`; manual coordinates override the associated camera location
+for this test only. Without coordinates, an API-associated camera's location is
+used; otherwise alerts remain unplaced. Invalid/partial coordinates return 422.
+
+New algorithm tests save the exact sampled JPEGs passed to the model. Each timeline
+result displays timestamped thumbnails; selecting one pauses/seeks source playback.
+These are all inputs for the analysis window, not a claim that the model localized
+the hazard to one frame. Both local and cloud providers use this evidence path.
+Older results have no saved evidence and must be rerun. Thumbnails load lazily via
+authenticated `GET /api/v1/analysis-jobs/{id}/findings/{finding_index}/frames/{frame_index}`
+(zero-based indices; 404 for unknown evidence, 410 for a missing file). Findings
+include `evidence_frames: [{"offset_seconds": 0.0}]`. Files remain beside result
+media with the same local retention policy; protect them as surveillance footage.
+
+### Optional Qwen Cloud provider
+
+In **Settings → Model provider**, enable **Use qwencloud VLM API**, enter the API
+key, workspace ID, matching region and vision model, then save. Disabled uses local
+SmolVLM; enabled sends sampled footage to Alibaba Cloud for both camera analysis
+and algorithm tests. Both use your configured prompt and create pending alerts
+for valid danger results. No new dependency is required. See [cloud setup,
+credential storage, API contract and limitations](docs/qwen-cloud.md).
+
+The previous fire-video formatting bug is addressed, but the real local 500M
+model retest still missed the fire. Neither provider is a validated safety detector.
+No live Qwen accuracy test has been performed without an authorized API key.
+
 **Settings → VLM prompt defines the danger criteria for both cameras and algorithm tests.** The local model adapter appends only decision/evidence instructions and a required output contract: first line `DANGER: yes`, `DANGER: no`, or `DANGER: uncertain`, followed by visible evidence. It tells the model to follow the configured criteria and exclusions, without adding a separate hardcoded danger list. The default editable prompt covers visible assault, fire, falling, or distress and excludes ordinary activity; saved custom prompts are preserved. Define criteria explicitly, for example: `Treat a person visibly entering the swimming pool as danger. Walking beside the pool is not danger. If entry is unclear, report uncertain.` This is a configuration example, not a validated pool-safety detector.
 
-Saving the shared prompt affects the next model call in both paths, including subsequent windows of a running camera or media job; completed findings are not reclassified. Only a valid explicit `yes` with nonempty evidence invokes `AlertService.record_finding`. Missing, malformed, conflicting headers and uncertain outputs do not create alerts. Free-text keywords alone never trigger alerts. Findings expose `danger_status`; older findings default to `uncertain` and are not retroactively classified.
+Saving the shared prompt affects the next model call in both paths, including subsequent windows of a running camera or media job; completed findings are not reclassified. Only a valid explicit `yes` with nonempty evidence invokes `AlertService.record_finding`. Free-text keywords alone never trigger alerts. Findings expose `danger_status`; older findings default to `uncertain` and are not retroactively classified.
+
+The **Use surveillance prompt** button loads broad scene-aware criteria for fire, falls, water distress, perimeter climbing, forced entry, violence and collisions; click Save settings to apply. The preset is also the default for new configurations. See the [copyable surveillance prompt](docs/surveillance-prompt.md). The authenticated/admin `GET /api/v1/settings/surveillance-prompt` endpoint returns this preset without changing settings.
+
+The model is asked for one decision followed by an evidence sentence, rather than a list of alternative answer examples. The existing Transformers `prefix_allowed_tokens_fn` API constrains the generated header to exactly one of the three decisions followed by `EVIDENCE:`; the model still chooses the decision. Evidence remains generated, not hardcoded. This reuses the installed runtime without a new dependency ([upstream generation API](https://huggingface.co/docs/transformers/v4.43.3/en/main_classes/text_generation)). Parsing accepts whitespace/case variations and the known `ANGER:` typo. Invalid/missing/repeated/conflicting decisions get at most one repair inference using the same frames and criteria. If repair fails, the finding remains uncertain with `analysis_warning`; it is not a safe result and creates no automatic danger alert. Legitimate uncertainty is not retried to force a positive decision. Repairs may double generation cost for malformed windows. The camera/algorithm timelines display decision and warning labels; a later negative window never clears an earlier pending danger alert.
 
 Live camera findings and uploaded-media analyses use the same alert function immediately after each analyzed window. Alerts already recorded remain available even if a later window or preview encoding fails. Every flagged analysis window creates a separate pending alert, deduplicated by finding ID; neighboring windows are not automatically merged into an incident. Uploaded media is labeled as such (an old clip is not a live event). Its alert timestamp is processing time, and offsets refer to the source clip. An upload associated with a camera uses that camera's configuration captured at submission; unassociated uploads remain unplaced.
 

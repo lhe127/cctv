@@ -310,3 +310,11 @@ svg { display: block; }
 .danger-pending { background:#fff0f2; color:#ad2638; }
 .danger-alert:target { outline:2px solid #ad2638; outline-offset:4px; }
 @media(max-width:600px) { .danger-alert { flex-direction:column; } }
+/* Exact sampled evidence, lazily fetched through the authenticated API. */
+.evidence-strip { display:flex; gap:10px; overflow-x:auto; max-width:100%; padding:8px 0; }
+.test-card > div { min-width:0; max-width:100%; }
+.evidence-frame { flex:0 0 160px; border:1px solid #dce3ed; border-radius:8px; padding:6px; background:#f6f8fb; cursor:pointer; color:#27384e; }
+.evidence-frame img { display:block; width:146px; height:110px; object-fit:contain; background:#e8edf3; }
+.evidence-frame span,.evidence-frame small { display:block; margin-top:4px; }
+.evidence-frame:focus-visible { outline:3px solid #0d9488; outline-offset:2px; }
+.evidence-note { font-size:12px; color:#617087; }

@@ -7,12 +7,15 @@ from types import SimpleNamespace
 import cv2
 import httpx
 import numpy as np
+import pytest
+from sentinel.qwen import QwenAnalyzer
 
 from sentinel.api import create_app
 from sentinel.smolvlm import ALERT_FORMAT
 
 
-def test_shared_prompt_updates_camera_and_algorithm_alerts(tmp_path, monkeypatch):
+@pytest.mark.parametrize('cloud', [False, True])
+def test_shared_prompt_updates_camera_and_algorithm_alerts(tmp_path, monkeypatch, cloud):
     monkeypatch.delenv('SENTINEL_ADMIN_API_KEY', raising=False)
     monkeypatch.setitem(__import__('sys').modules, 'torch', SimpleNamespace(inference_mode=nullcontext))
     criteria = {
@@ -47,6 +50,20 @@ def test_shared_prompt_updates_camera_and_algorithm_alerts(tmp_path, monkeypatch
     # Keep the application's real settings provider, shared adapter, workers and alert callbacks.
     model = app.state.algorithm_runner.analyzer_factory()
     assert model is app.state.controller.analyzer_factory()
+    class CloudConnection:
+        status = 200
+        def __init__(self, *args, **kwargs): pass
+        def request(self, method, path, body, headers):
+            content = json.loads(body)['messages'][0]['content']
+            assert any(item['type'] == 'image_url' for item in content)
+            self.prompt = next(prompt for prompt in criteria if content[0]['text'].startswith(prompt))
+            calls.append(self.prompt + ALERT_FORMAT)
+        def getresponse(self): return self
+        def read(self, limit):
+            return json.dumps({'choices':[{'message':{'content':f'DANGER: {criteria[self.prompt]}\nEVIDENCE: Fixture observation.'},'finish_reason':'stop'}]}).encode()
+        def close(self): pass
+    model.cloud = QwenAnalyzer(CloudConnection)
+    model = model.local
     model._model = SimpleNamespace(device='cpu', generate=lambda **kwargs: np.array([[1, 2]]))
     model._processor = Processor()
 
@@ -56,7 +73,8 @@ def test_shared_prompt_updates_camera_and_algorithm_alerts(tmp_path, monkeypatch
                 headers = {'X-API-Key': 'test-key'}
                 for index, (prompt, decision) in enumerate(criteria.items()):
                     response = await client.put('/api/v1/settings', headers=headers,
-                        json={'prompt': prompt, 'window_frames': 1})
+                        json={'prompt': prompt, 'window_frames': 1, 'qwen_enabled':cloud,
+                              'qwen_workspace':'fixture', 'qwen_api_key':'fixture-key'})
                     assert response.status_code == 200, response.text
                     response = await client.post('/api/v1/cameras/cam/start', headers=headers)
                     assert response.status_code == 200, response.text

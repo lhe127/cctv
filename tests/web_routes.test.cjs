@@ -13,7 +13,8 @@ async function loadRoute(route) {
     if (!elements.has(id)) elements.set(id, {
       innerHTML: '', textContent: '', dataset: {},value:'all',
       classList: {add() {}, toggle() {}},
-      addEventListener() {}, focus() {}, append() {},scrollIntoView() {},
+      addEventListener() {}, focus() {}, append() {},scrollIntoView() {},before() {},
+      insertAdjacentHTML(position, html) { this.innerHTML = html + this.innerHTML; },
       querySelector: element, querySelectorAll: () => [],
     });
     return elements.get(id);
@@ -33,7 +34,9 @@ async function loadRoute(route) {
     sessionStorage: {getItem: () => 'fixture-key'},
     CSS: {escape: value => value},
     fetch: async url => {
-      assert.ok(['/api/v1/summary', '/api/v1/cameras', '/api/v1/settings', '/api/v1/findings', '/api/v1/alerts', '/api/v1/alerts?status=pending'].includes(url), url);
+      assert.ok(['/api/v1/summary', '/api/v1/cameras', '/api/v1/settings', '/api/v1/findings', '/api/v1/alerts', '/api/v1/alerts?status=pending', '/api/v1/algorithm-tests', '/api/v1/capabilities'].includes(url), url);
+      if(url==='/api/v1/algorithm-tests')return {status:200,ok:true,json:async()=>[{id:'test',filename:'fixture.jpg',state:'completed',map_position:{x:0,y:0}}]};
+      if(url==='/api/v1/capabilities')return {status:200,ok:true,json:async()=>({})};
       if(url.startsWith('/api/v1/alerts'))return {status:200,ok:true,json:async()=>[{id:'test-alert',status:'pending',description:'<unsafe>',camera_name:'Gate',created_at:'2026-10-15T00:00:00Z',start_seconds:0,end_seconds:3.5,map_position:null}]};
       if(url==='/api/v1/findings')return {status:200,ok:true,json:async()=>[]};
       if(url.endsWith('/settings'))return {status:200,ok:true,json:async()=>({prompt:'<safe prompt>',sample_fps:2,window_frames:8,max_new_tokens:96,preview_fps:5})};
@@ -87,4 +90,12 @@ test('Settings route loads escaped prompt and bounded analysis controls', async 
   assert.match(element('#settings-editor').innerHTML,/setting-sample_fps/);
   assert.match(element('#settings-editor').innerHTML,/setting-window_frames/);
   assert.match(element('#settings-editor').innerHTML,/Both cameras and algorithm tests use this prompt/);
+});
+
+test('Algorithm test displays optional bounded coordinates and saved origin location', async () => {
+  const {html,element}=await loadRoute('algorithm-test');
+  assert.match(element('#upload-zone').innerHTML,/id="test-map-x" type="number" min="-80" max="80"/);
+  assert.match(element('#upload-zone').innerHTML,/id="test-map-y" type="number" min="-55" max="55"/);
+  assert.match(element('#upload-zone').innerHTML,/Enter both coordinates/);
+  assert.match(html,/Map \(0, 0\)/);
 });

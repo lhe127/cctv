@@ -44,7 +44,11 @@ def test_camera_coordinates_and_settings_api(tmp_path, monkeypatch):
                 assert (await client.get('/api/v1/settings')).status_code == 401
                 assert (await client.get('/api/v1/settings', headers=headers)).status_code == 403
                 admin = {**headers, 'X-Admin-Key': 'admin-test'}
+                assert (await client.get('/api/v1/settings/surveillance-prompt', headers=headers)).status_code == 403
+                preset = (await client.get('/api/v1/settings/surveillance-prompt', headers=admin)).json()['prompt']
+                assert 'even when no person is visible' in preset
                 value = (await client.get('/api/v1/settings', headers=admin)).json()
+                value.pop('qwen_key_configured')
                 value.update(prompt='Describe visible motion only.', sample_fps=1, window_frames=3, max_new_tokens=64)
                 assert (await client.put('/api/v1/settings', headers=headers, json=value)).status_code == 403
                 assert (await client.put('/api/v1/settings', headers=admin, json=value)).status_code == 200

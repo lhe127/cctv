@@ -3,13 +3,14 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from dataclasses import asdict
 from pathlib import Path
 from threading import Event as StopEvent, RLock
 from typing import Callable
 from uuid import uuid4
 import logging
 
-from .domain import Camera
+from .domain import Camera, MapPosition
 from .storage import JsonStateStore
 from .vision import VisionAnalyzer
 from .vision_session import VisionSession
@@ -50,7 +51,8 @@ class AlgorithmTestRunner:
     def _public(record: dict) -> dict:
         return {key: value for key, value in record.items() if key != "output_path"}
 
-    def submit(self, filename: str, media_type: str, payload: bytes, camera: Camera | None = None) -> dict:
+    def submit(self, filename: str, media_type: str, payload: bytes, camera: Camera | None = None,
+               map_position: MapPosition | None = None) -> dict:
         suffix = Path(filename).suffix.lower()
         if suffix not in SUPPORTED_IMAGES | SUPPORTED_VIDEOS:
             raise ValueError("supported files: JPG, PNG, WEBP, MP4, MOV, AVI, and MKV")
@@ -68,6 +70,7 @@ class AlgorithmTestRunner:
             "findings": [],
             "camera_id": camera.id if camera else None,
             "camera_name": camera.name if camera else None,
+            "map_position": asdict(map_position or camera.map_position) if (map_position or (camera and camera.map_position)) else None,
             "zones": [],
             "events": [],
             "inference_fps": self.inference_fps,
@@ -119,6 +122,21 @@ class AlgorithmTestRunner:
                 self.store.put_algorithm_test(record)
                 return converted, "video/webm"
         return path, record["output_media_type"]
+
+    def evidence_frame(self, job_id: str, finding_index: int, frame_index: int) -> Path:
+        record = self._record(job_id)
+        if record is None:
+            raise KeyError(job_id)
+        findings = record.get("findings", [])
+        if not 0 <= finding_index < len(findings):
+            raise KeyError("finding not found")
+        frames = findings[finding_index].get("evidence_frames", [])
+        if not 0 <= frame_index < len(frames):
+            raise KeyError("frame not found")
+        path = self.output_dir / f"{record['id']}-evidence-{finding_index}-{frame_index}.jpg"
+        if path.resolve().parent != self.output_dir.resolve() or not path.is_file():
+            raise FileNotFoundError("frame evidence is unavailable")
+        return path
 
     def _convert_legacy(self, source: Path, target: Path) -> None:
         import cv2
@@ -185,10 +203,19 @@ class AlgorithmTestRunner:
             settings = self.settings_provider() if self.settings_provider else None
             def report_finding(finding):
                 self.on_finding({**finding, "id": f"{record['id']}:{len(session.findings)}",
-                                 "job_id": record["id"]}, camera)
+                                 "job_id": record["id"], "map_position": record["map_position"]}, camera)
+
+            def save_evidence(index, frames):
+                evidence = []
+                for frame_index, frame in enumerate(frames):
+                    path = self.output_dir / f"{record['id']}-evidence-{index}-{frame_index}.jpg"
+                    path.write_bytes(frame.jpeg)
+                    evidence.append({"offset_seconds": frame.offset_seconds})
+                return evidence
 
             session = VisionSession(analyzer, self._stop, settings=settings,
-                                    on_finding=report_finding if self.on_finding else None)
+                                    on_finding=report_finding if self.on_finding else None,
+                                    save_evidence=save_evidence)
             if settings:
                 self._save(record, inference_fps=settings.sample_fps, window_frames=settings.window_frames)
             if suffix in SUPPORTED_IMAGES:

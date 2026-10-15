@@ -8,7 +8,9 @@ from .vision import ANALYSIS_WINDOW_FRAMES, SAMPLE_INTERVAL_SECONDS, ModelBusy, 
 
 
 class VisionSession:
-    def __init__(self, analyzer: VisionAnalyzer, stop: Event | None = None, settings=None, on_finding=None) -> None:
+    def __init__(self, analyzer: VisionAnalyzer, stop: Event | None = None, settings=None, on_finding=None,
+                 save_evidence=None) -> None:
+        self.save_evidence = save_evidence
         self.on_finding = on_finding
         self.sample_interval = 1 / settings.sample_fps if settings else SAMPLE_INTERVAL_SECONDS
         self.window_frames = settings.window_frames if settings else ANALYSIS_WINDOW_FRAMES
@@ -40,6 +42,8 @@ class VisionSession:
                 item = finding.public()
                 if self.on_finding:
                     self.on_finding(item)
+                if self.save_evidence:
+                    item["evidence_frames"] = self.save_evidence(len(self.findings), tuple(self.pending))
                 self.findings.append(item)
                 self.pending.clear()
                 return
