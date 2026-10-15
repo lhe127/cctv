@@ -25,6 +25,7 @@
     cameras: ['Monitoring', 'Cameras'],
     robots: ['Automation', 'Robots'],
     map: ['Township', 'Residential map'],
+    settings: ['Administration', 'Analysis settings'],
     alerts: ['Visual analysis', 'Review findings'],
     'algorithm-test': ['Testing lab', 'Algorithm test'],
   };
@@ -255,7 +256,7 @@
         const action = content.querySelector('[data-camera-action]');
         action.dataset.cameraAction = ['running', 'starting', 'error'].includes(state.state) ? 'stop' : 'start';
         action.textContent = camera.source_type === 'synthetic' ? 'Virtual input' : action.dataset.cameraAction === 'stop' ? 'Stop camera' : 'Start camera';
-        content.querySelector('#behavior-grid').innerHTML = `<article class="behavior-tile"><strong>${escapeHtml(state.analysis_state || 'Waiting for frames')}</strong><span>${escapeHtml(state.analysis_error || 'Eight frames sampled at 0.5-second intervals per action analysis window. Findings require review; automatic alerts are disabled.')}</span></article>`;
+        content.querySelector('#behavior-grid').innerHTML = `<article class="behavior-tile"><strong>${escapeHtml(state.analysis_state || 'Waiting for frames')}</strong><span>${escapeHtml(state.analysis_error || 'Sampling uses the settings active when this camera started. Findings require review; automatic alerts are disabled.')}</span></article>`;
         content.querySelector('#camera-alert-rows').innerHTML = events.length ? events.map(item => `<tr><td>${formatTime(item.observed_at)}</td><td>${Number(item.start_seconds).toFixed(1)}–${Number(item.end_seconds).toFixed(1)}s</td><td>${Number(item.frames_analyzed)}</td><td>${escapeHtml(item.description)}</td></tr>`).join('') : '<tr><td colspan="4">Waiting for the first analysis result.</td></tr>';
         if (!live) { content.querySelector('.camera-visual img').hidden = true; content.querySelector('.camera-placeholder').hidden = false; }
       } catch (error) {
@@ -312,8 +313,11 @@
     const editing = Boolean(camera);
     showModal(`<div class="modal-head"><h2>${editing ? 'Edit camera' : 'Add camera'}</h2><button class="icon-button" data-close-modal aria-label="Close">×</button></div>
       <form id="camera-form"><div class="modal-body form-grid">
-        <div class="form-field"><label for="camera-id">Camera ID</label><input class="input" id="camera-id" value="${escapeHtml(camera?.id || '')}" placeholder="north-gate" pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*" ${editing ? 'disabled' : ''} required><small>Stable letters, numbers, dashes, or underscores.</small></div>
+        <div class="form-field"><label for="camera-id">Camera ID</label><input class="input" id="camera-id" value="${escapeHtml(camera?.id || '')}" placeholder="north-gate" pattern="[a-zA-Z0-9](?:[a-zA-Z0-9_]|-)*" ${editing ? 'disabled' : ''} required><small>Stable letters, numbers, dashes, or underscores.</small></div>
         <div class="form-field"><label for="camera-name">Display name</label><input class="input" id="camera-name" value="${escapeHtml(camera?.name || '')}" placeholder="North gate" required></div>
+        <div class="form-field"><label for="camera-x">Map X (−80 to 80)</label><input class="input" type="number" step="any" min="-80" max="80" id="camera-x" value="${camera?.map_position?.x ?? ''}"></div>
+        <div class="form-field"><label for="camera-y">Map Y (−55 to 55)</label><input class="input" type="number" step="any" min="-55" max="55" id="camera-y" value="${camera?.map_position?.y ?? ''}"></div>
+        <small class="full">Optional: center (0, 0), +X right/east, +Y up/north. Plan units, not metres or GPS. Leave both blank to remove placement.</small>
         <div class="form-field full"><label for="camera-source">Video source</label><input class="input" id="camera-source" placeholder="0, video file path, RTSP URL, or synthetic" ${editing ? '' : 'required'}><small>${editing ? `Current: ${escapeHtml(camera.source_label)}. Leave blank to keep it.` : 'Use 0 for the first webcam. Credentials in RTSP URLs are kept only in local configuration.'}</small></div>
       </div><div class="modal-actions"><button type="button" class="button button-secondary" data-close-modal>Cancel</button><button class="button button-primary" type="submit">${editing ? 'Save changes' : 'Add camera'}</button></div></form>`);
     const form = modalRoot.querySelector('#camera-form');
@@ -321,6 +325,9 @@
       event.preventDefault();
       const sourceValue = form.querySelector('#camera-source').value;
       const body = {name: form.querySelector('#camera-name').value.trim()};
+      const x=form.querySelector('#camera-x').value,y=form.querySelector('#camera-y').value;
+      if((x==='')!==(y==='')){toast('Enter both X and Y, or leave both blank.', 'error');return;}
+      body.map_position=x===''?null:{x:Number(x),y:Number(y)};
       if (sourceValue.trim()) body.source = parseSource(sourceValue);
       if (!editing) { body.id = form.querySelector('#camera-id').value.trim(); body.source = parseSource(sourceValue); }
       const submit = form.querySelector('[type="submit"]'); submit.disabled = true;
@@ -349,11 +356,12 @@
             <button class="map-control" type="button" data-map-action="zoom-in" aria-label="Zoom in">+</button>
             <button class="map-control" type="button" data-map-action="zoom-out" aria-label="Zoom out">−</button>
             <button class="map-control map-control-wide" type="button" data-map-action="reset">Reset view</button>
-            <button class="map-control map-control-wide active" type="button" data-map-action="cameras" aria-pressed="true">Camera coverage</button>
+            <button class="map-control map-control-wide active" type="button" data-map-action="cameras" aria-pressed="true">Camera pins</button>
           </div>
           <div class="map-hint"><span>Drag to orbit</span><span>Scroll to zoom</span><span>Click an asset</span></div>
         </div>
         <aside class="map-side-panel">
+          <article class="panel"><div class="panel-body"><h3>Plan coordinates</h3><p>Center (0, 0) · X: −80…80 · Y: −55…55<br>+X right/east · +Y up/north. Plan units, not GPS.</p><a href="/cameras" class="link-button">Set camera coordinates →</a><p><button class="button button-secondary" data-map-feature="patrol-robot">Locate simulated patrol robot</button></p></div></article>
           <article class="panel map-inspector" aria-live="polite">
             <div class="map-inspector-hero"><span id="map-inspector-icon">⌂</span><span class="state-pill" id="map-inspector-state">Site overview</span></div>
             <div class="panel-body"><span class="eyebrow" id="map-inspector-type">Master plan</span><h3 id="map-inspector-title">Sentinel Residences</h3><p id="map-inspector-description">Select any building or amenity to inspect it. The model follows the layout of the supplied plan and works without an external map service.</p><dl class="map-inspector-facts" id="map-inspector-facts"><div><dt>Homes</dt><dd>4</dd></div><div><dt>Amenities</dt><dd>3</dd></div><div><dt>Cameras</dt><dd>${cameras.length}</dd></div></dl></div>
@@ -366,7 +374,7 @@
               ['garden', 'Garden', 'Amenity'], ['guardhouse', 'Guardhouse', 'Security'],
             ].map(([id, name, type]) => `<button type="button" class="map-directory-item" data-map-feature="${id}"><span class="map-directory-dot ${id}"></span><span><strong>${name}</strong><small>${type}</small></span><span aria-hidden="true">→</span></button>`).join('')}
           </div></article>
-          <article class="panel map-camera-panel"><div class="panel-head"><div><h3>Camera positions</h3><p>${cameras.length} configured source${cameras.length === 1 ? '' : 's'}</p></div></div><div class="map-directory-list">${cameras.length ? cameras.map((camera, index) => `<button type="button" class="map-directory-item" data-map-feature="camera-${escapeHtml(camera.id)}"><span class="map-camera-dot"></span><span><strong>${escapeHtml(camera.name)}</strong><small>${escapeHtml(camera.source_label)} · Marker ${String(index + 1).padStart(2, '0')}</small></span><span aria-hidden="true">→</span></button>`).join('') : '<div class="map-empty-cameras"><p>No cameras configured yet.</p><a class="button button-secondary" href="/cameras">Add a camera</a></div>'}</div></article>
+          <article class="panel map-camera-panel"><div class="panel-head"><div><h3>Camera positions</h3><p>${cameras.filter(c=>c.map_position).length} placed / ${cameras.length} configured</p></div></div><div class="map-directory-list">${cameras.length ? cameras.map(camera => `<button type="button" class="map-directory-item" ${camera.map_position ? `data-map-feature="camera-${escapeHtml(camera.id)}"` : 'disabled'}><span class="map-camera-dot"></span><span><strong>${escapeHtml(camera.name)}</strong><small>${camera.map_position ? `(${camera.map_position.x}, ${camera.map_position.y})` : 'Not placed — edit camera to set coordinates'}</small></span><span aria-hidden="true">→</span></button>`).join('') : '<div class="map-empty-cameras"><p>No cameras configured yet.</p><a class="button button-secondary" href="/cameras">Add a camera</a></div>'}</div></article>
         </aside>
       </section>`;
 
@@ -387,7 +395,33 @@
   }
 
   function renderRobots() {
-    content.innerHTML = `<div class="section-head"><div><h2>Robot operations</h2><p>A dedicated workspace for future robot adapters and missions.</p></div><span class="state-pill">0 connected</span></div><article class="panel empty-state" style="min-height:520px"><span class="empty-icon">${icon('robot')}</span><h3>No robots connected</h3><p>Robot hardware is intentionally not simulated as live equipment. When a device is selected, it can be integrated behind a replaceable adapter with virtual-first testing.</p><button class="button button-secondary" disabled>Device adapter required</button></article>`;
+    content.innerHTML = `<div class="section-head"><div><h2>Robot operations</h2><p>Virtual-first patrol demonstration.</p></div><span class="state-pill">Simulation only</span></div><article class="panel empty-state"><span class="empty-icon">${icon('robot')}</span><h3>Residential patrol robot</h3><p>A simulated robot continuously follows the perimeter road while the map is open. No physical robot is connected or controlled.</p><a class="button button-primary" href="/map">View patrol on map</a></article>`;
+  }
+
+  async function renderSettings() {
+    content.innerHTML=`<article class="panel"><div class="panel-head"><div><h2>Analysis settings</h2><p>Administrator access. Changes are saved locally.</p></div></div><div class="panel-body"><form id="settings-unlock" class="form-grid"><div class="form-field full"><label for="admin-key">Admin key (if separately configured)</label><input class="input" id="admin-key" type="password" autocomplete="off"><small>Without SENTINEL_ADMIN_API_KEY, the signed-in API key has owner access.</small></div><button class="button button-secondary">Load settings</button></form><div id="settings-editor"></div></div></article>`;
+    const unlock=content.querySelector('#settings-unlock');
+    async function load(event){
+      event?.preventDefault();
+      const headers={'X-Admin-Key':content.querySelector('#admin-key').value || apiKey};
+      try{
+        const value=await api('/api/v1/settings',{headers});
+        const editor=content.querySelector('#settings-editor');
+        editor.innerHTML=`<form id="analysis-settings" class="form-grid"><p class="full">Prompt and output limit apply to the next model call. Sampling, window size and preview rate apply when cameras or media jobs start. Restart running cameras to use new rates. Sampling FPS is not model calls per second; live windows may be skipped when the model is busy.</p><div class="form-field full"><label for="analysis-prompt">VLM prompt</label><textarea class="input" id="analysis-prompt" name="prompt" rows="8" maxlength="4000" required>${escapeHtml(value.prompt)}</textarea><small>Describe observable evidence and uncertainty. Outputs still require human review.</small></div>${[
+          ['sample_fps','Sampled frames per second',.25,10,.25],['window_frames','Frames per analysis window',1,8,1],
+          ['max_new_tokens','Maximum output tokens',16,256,1],['preview_fps','Preview frames per second',1,15,1]
+        ].map(([name,label,min,max,step])=>`<div class="form-field"><label for="setting-${name}">${label}</label><input class="input" id="setting-${name}" name="${name}" type="number" min="${min}" max="${max}" step="${step}" value="${value[name]}" required></div>`).join('')}<div class="full"><button class="button button-primary" type="submit">Save settings</button><span id="settings-status" role="status"></span></div></form>`;
+        editor.querySelector('form').addEventListener('submit',async event=>{
+          event.preventDefault();const form=event.currentTarget,button=form.querySelector('button');
+          const body=Object.fromEntries(new FormData(form));
+          for(const name of ['sample_fps','window_frames','max_new_tokens','preview_fps'])body[name]=Number(body[name]);
+          button.disabled=true;
+          try{await api('/api/v1/settings',{method:'PUT',headers,json:body});content.querySelector('#settings-status').textContent=' Saved. Restart running cameras to apply sampling changes.';toast('Settings saved.');}
+          catch(error){toast(error.message,'error');}finally{button.disabled=false;}
+        });
+      }catch(error){content.querySelector('#settings-editor').replaceChildren();toast(error.message,'error');}
+    }
+    unlock.addEventListener('submit',load);await load();
   }
 
   function algorithmHistoryMarkup(tests) {
@@ -491,6 +525,7 @@
       else if (route === 'cameras') await renderCameras();
       else if (route === 'robots') renderRobots();
       else if (route === 'map') await renderMap();
+      else if (route === 'settings') await renderSettings();
       else if (route === 'alerts') await renderAlerts();
       else if (route === 'algorithm-test') await renderAlgorithmTest();
       else window.location.replace('/dashboard');

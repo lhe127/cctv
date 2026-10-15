@@ -8,7 +8,9 @@ from .vision import ANALYSIS_WINDOW_FRAMES, SAMPLE_INTERVAL_SECONDS, ModelBusy, 
 
 
 class VisionSession:
-    def __init__(self, analyzer: VisionAnalyzer, stop: Event | None = None) -> None:
+    def __init__(self, analyzer: VisionAnalyzer, stop: Event | None = None, settings=None) -> None:
+        self.sample_interval = 1 / settings.sample_fps if settings else SAMPLE_INTERVAL_SECONDS
+        self.window_frames = settings.window_frames if settings else ANALYSIS_WINDOW_FRAMES
         self.analyzer = analyzer
         self.stop = stop or Event()
         self.pending = []
@@ -23,8 +25,8 @@ class VisionSession:
         if at + 1e-9 < self.next_sample:
             return
         self.pending.append(sample_frame(frame, at))
-        self.next_sample = at + SAMPLE_INTERVAL_SECONDS
-        if len(self.pending) == ANALYSIS_WINDOW_FRAMES:
+        self.next_sample = at + self.sample_interval
+        if len(self.pending) == self.window_frames:
             self.flush()
 
     def flush(self) -> None:

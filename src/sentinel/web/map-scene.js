@@ -25,8 +25,8 @@ export function buildSite(scene, m, cameras) {
   box(80, -1.2, 55, 167, 1.5, 117, m.stone);
 
   // Continuous rounded perimeter and internal access roads, including the southern entrance.
-  function road(points, width) {
-    const curve = new THREE.CatmullRomCurve3(points.map(([x,z]) => new THREE.Vector3(x, .12, z)));
+  function road(points, width, closed=false) {
+    const curve = new THREE.CatmullRomCurve3(points.map(([x,z]) => new THREE.Vector3(x, .12, z)),closed);
     const makeStrip = (w, y, material) => {
       const vertices = [], uvs = [], indices = [];
       for (let i = 0; i <= 200; i++) {
@@ -41,8 +41,9 @@ export function buildSite(scene, m, cameras) {
       const strip = mesh(geometry, material); strip.castShadow = false;
     };
     makeStrip(width + 2.3, .12, m.paving); makeStrip(width, .15, m.asphalt);
+    return curve;
   }
-  road([[13,24],[13,14],[21,9],[80,9],[139,9],[147,16],[147,50],[147,86],[139,92],[100,92],[80,92],[24,92],[13,85],[13,24]], 8);
+  const patrolPath=road([[13,24],[13,14],[21,9],[80,9],[139,9],[147,16],[147,50],[147,86],[139,92],[100,92],[80,92],[24,92],[13,85]], 8,true);
   road([[13,45],[31,43],[55,44],[69,48],[90,48],[105,44],[128,44],[147,45]], 8);
   road([[80,48],[80,70],[80,91],[80,110]], 15);
   for (let x = 25; x < 139; x += 10) {
@@ -183,12 +184,25 @@ export function buildSite(scene, m, cameras) {
   const cameraGroup=new THREE.Group(); root.add(cameraGroup);
   cameras.forEach(feature=>{
     const group=new THREE.Group(); group.position.set(feature.x,0,feature.z); cameraGroup.add(group);
-    cylinder(0,2.6,0,.08,5.2,m.metal,group); box(0,5.3,0,.7,.4,1.1,m.white,group); box(0,5.3,.57,.45,.25,.05,m.glass,group);
-    register(group,feature);
-    const fan=new THREE.Shape(); fan.moveTo(0,0);
-    for(let i=0;i<=20;i++){const a=feature.angle-.4+i*.04;fan.lineTo(Math.cos(a)*15,-Math.sin(a)*15);} fan.closePath();
-    const coverage=mesh(new THREE.ShapeGeometry(fan),new THREE.MeshBasicMaterial({color:'#37ad94',transparent:true,opacity:.10,depthWrite:false}),group);
-    coverage.rotation.x=-Math.PI/2;coverage.position.y=.21;coverage.castShadow=false;
+    targets.set(feature.id,group);
   });
-  return {root,targets,selectable,cameraGroup};
+  // Centered plan axes: X east/right, Y north/up (negative world Z).
+  const axes=new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0,.24,55),new THREE.Vector3(160,.24,55),
+    new THREE.Vector3(80,.24,0),new THREE.Vector3(80,.24,110)]);
+  root.add(new THREE.LineSegments(axes,new THREE.LineBasicMaterial({color:0x218775,transparent:true,opacity:.5})));
+  const origin=mesh(new THREE.RingGeometry(.65,1,32),m.white);origin.rotation.x=-Math.PI/2;origin.position.set(80,.26,55);
+  const robot=new THREE.Group();root.add(robot);targets.set('patrol-robot',robot);
+  box(0,1,0,2.2,1.3,3,m.white,robot);box(0,1.8,-.1,1.7,.5,1.5,m.metal,robot);
+  cylinder(0,2.3,0,.3,.45,m.glass,robot);
+  for(const x of [-1.15,1.15])for(const z of [-.9,.9]){
+    const wheel=cylinder(x,.55,z,.5,.3,m.metal,robot);wheel.rotation.z=Math.PI/2;
+  }
+  const length=patrolPath.getLength();
+  function updatePatrol(seconds){
+    const t=(seconds*4/length)%1,p=patrolPath.getPointAt(t),direction=patrolPath.getTangentAt(t);
+    robot.position.copy(p);robot.rotation.y=Math.atan2(direction.x,direction.z);
+  }
+  updatePatrol(0);
+  return {root,targets,selectable,cameraGroup,robot,updatePatrol};
 }

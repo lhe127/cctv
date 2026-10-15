@@ -10,4 +10,5 @@ config.local.json
 media/test-clips/
 data/
 output/playwright/
+output/pytest-*/
 .playwright-cli/

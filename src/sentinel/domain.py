@@ -101,11 +101,22 @@ class Zone:
 
 
 @dataclass(frozen=True)
+class MapPosition:
+    x: float
+    y: float
+
+    def __post_init__(self):
+        if not isfinite(self.x) or not isfinite(self.y) or not (-80 <= self.x <= 80 and -55 <= self.y <= 55):
+            raise ValueError("map position must be within X ±80 and Y ±55 plan units")
+
+
+@dataclass(frozen=True)
 class Camera:
     id: str
     name: str
     source: str | int  # synthetic, webcam index, local video path, or RTSP URL
     zones: tuple[Zone, ...] = ()
+    map_position: MapPosition | None = None
 
 
 @dataclass

@@ -17,7 +17,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 from .algorithm_test import AlgorithmTestRunner
-from .domain import Camera, Detection, Kind, Rule, Zone
+from .domain import Camera, Detection, Kind, Rule, Zone, MapPosition
+from .settings import AnalysisSettings, JsonSettingsStore
 from .service import MonitorService
 from .storage import JsonCameraRepository, JsonStateStore
 from .video import CaptureController
@@ -82,10 +83,16 @@ class ZoneInput(BaseModel):
     proximity_radius: float = Field(default=0.15, gt=0, le=1)
 
 
+class MapPositionInput(BaseModel):
+    x: float = Field(ge=-80, le=80, allow_inf_nan=False)
+    y: float = Field(ge=-55, le=55, allow_inf_nan=False)
+
+
 class CameraInput(BaseModel):
     id: str = Field(min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
     name: str = Field(min_length=1, max_length=120)
     source: str | int
+    map_position: MapPositionInput | None = None
 
     @field_validator("source")
     @classmethod
@@ -100,6 +107,7 @@ class CameraInput(BaseModel):
 class CameraUpdate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     source: str | int | None = None
+    map_position: MapPositionInput | None = None
 
     @field_validator("source")
     @classmethod
@@ -134,6 +142,7 @@ def _public_camera(camera: Camera) -> dict[str, object]:
         "source_type": source_type,
         "source_label": _source_label(camera.source),
         "zones": [asdict(zone) for zone in camera.zones],
+        "map_position": asdict(camera.map_position) if camera.map_position else None,
     }
 
 
@@ -160,19 +169,27 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
     if not secret:
         raise RuntimeError("SENTINEL_API_KEY is required")
 
-    vision_analyzer = analyzer or SmolVLM2Analyzer()
+    settings_store = JsonSettingsStore(state_path.with_name(state_path.stem + "-settings.json"))
+    admin_secret = os.getenv("SENTINEL_ADMIN_API_KEY") or secret
+    vision_analyzer = analyzer or SmolVLM2Analyzer(settings_provider=settings_store.get)
 
     def analyzer_factory():
         return vision_analyzer
 
-    controller = CaptureController(service, analyzer_factory)
+    controller = CaptureController(service, analyzer_factory, settings_provider=settings_store.get)
     algorithm_runner = AlgorithmTestRunner(analyzer_factory, state_store, state_path.parent / "algorithm-results",
-                                          inference_fps=inference_fps)
+                                          inference_fps=inference_fps, settings_provider=settings_store.get)
     config_lock = asyncio.Lock()
 
     async def authorize(x_api_key: str | None = Header(default=None)) -> None:
         if not x_api_key or not hmac.compare_digest(x_api_key, secret):
             raise HTTPException(status_code=401, detail="invalid API key")
+
+    async def authorize_admin(x_admin_key: str | None = Header(default=None),
+                              x_api_key: str | None = Header(default=None)) -> None:
+        candidate = x_admin_key or x_api_key
+        if not candidate or not hmac.compare_digest(candidate, admin_secret):
+            raise HTTPException(status_code=403, detail="admin key required")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -190,6 +207,20 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
     @app.get("/health")
     async def health():
         return {"status": "ok"}
+
+    @app.get("/api/v1/settings", response_model=AnalysisSettings,
+             dependencies=[Depends(authorize), Depends(authorize_admin)])
+    async def get_settings():
+        return settings_store.get()
+
+    @app.put("/api/v1/settings", response_model=AnalysisSettings,
+             dependencies=[Depends(authorize), Depends(authorize_admin)])
+    async def save_settings(payload: AnalysisSettings):
+        try:
+            await asyncio.to_thread(settings_store.save, payload)
+        except OSError:
+            raise HTTPException(status_code=503, detail="could not save analysis settings")
+        return payload
 
     @app.post("/api/v1/session", dependencies=[Depends(authorize)])
     async def create_session():
@@ -213,7 +244,7 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
 
     @app.get("/api/v1/capabilities", dependencies=[Depends(authorize)])
     async def capabilities():
-        return {"items": CAPABILITIES, "tracker": tracker_kind, "inference_fps": inference_fps,
+        return {"items": CAPABILITIES, "tracker": tracker_kind, "inference_fps": settings_store.get().sample_fps,
                 "test_duration_limit_seconds": 60, "model": MODEL_ID, "automatic_alerts": False}
 
     @app.get("/api/v1/cameras/{camera_id}", dependencies=[Depends(authorize)])
@@ -225,7 +256,8 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
 
     @app.post("/api/v1/cameras", status_code=status.HTTP_201_CREATED, dependencies=[Depends(authorize)])
     async def create_camera(payload: CameraInput):
-        camera = Camera(payload.id, payload.name.strip(), payload.source)
+        camera = Camera(payload.id, payload.name.strip(), payload.source,
+                        map_position=MapPosition(**payload.map_position.model_dump()) if payload.map_position else None)
         async with config_lock:
             current = service.cameras()
             if any(item.id == camera.id for item in current):
@@ -244,7 +276,9 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
             raise HTTPException(status_code=404, detail="camera not found")
         await asyncio.to_thread(controller.stop, camera_id)
         updated = replace(current, name=payload.name.strip(),
-                          source=current.source if payload.source is None else payload.source)
+                          source=current.source if payload.source is None else payload.source,
+                          map_position=(MapPosition(**payload.map_position.model_dump()) if payload.map_position else None)
+                          if "map_position" in payload.model_fields_set else current.map_position)
         async with config_lock:
             proposed = [updated if item.id == camera_id else item for item in service.cameras()]
             try:
@@ -444,7 +478,7 @@ def create_app(config_path: str | None = None, api_key: str | None = None,
 
     @app.get("/{page_name}", response_class=HTMLResponse, include_in_schema=False)
     async def console_page(page_name: str):
-        if page_name not in {"dashboard", "cameras", "robots", "map", "alerts", "algorithm-test"}:
+        if page_name not in {"dashboard", "cameras", "robots", "map", "alerts", "algorithm-test", "settings"}:
             raise HTTPException(status_code=404, detail="page not found")
         return HTMLResponse((web_directory / "app.html").read_text(encoding="utf-8"),
                             headers={"Cache-Control": "no-store"})

@@ -89,14 +89,18 @@ class EmptyDetector:
 
 class CaptureWorker:
     """Independent preview and bounded VLM sampling; no object/zone inference."""
-    def __init__(self, camera: Camera, service: MonitorService, analyzer: VisionAnalyzer, on_error: Callable[[str], None]) -> None:
+    def __init__(self, camera: Camera, service: MonitorService, analyzer: VisionAnalyzer, on_error: Callable[[str], None], settings=None) -> None:
         self.camera, self.service, self.analyzer, self.on_error = camera, service, analyzer, on_error
         self.preview_fps = max(1, min(15, float(os.getenv("SENTINEL_PREVIEW_FPS", "5"))))
+        self.sample_interval = 1 / settings.sample_fps if settings else SAMPLE_INTERVAL_SECONDS
+        self.window_frames = settings.window_frames if settings else ANALYSIS_WINDOW_FRAMES
+        if settings:
+            self.preview_fps = settings.preview_fps
         self.stop_event = StopEvent()
         self._ended = StopEvent()
         self._frame_ready = StopEvent()
         self._frame_lock = RLock()
-        self._samples = deque(maxlen=ANALYSIS_WINDOW_FRAMES)
+        self._samples = deque(maxlen=self.window_frames)
         self.capture_thread = Thread(target=self._capture, name=f"capture-{camera.id}", daemon=True)
         self.detect_thread = Thread(target=self._detect, name=f"analysis-{camera.id}", daemon=True)
 
@@ -141,9 +145,9 @@ class CaptureWorker:
                     if at >= next_sample:
                         with self._frame_lock:
                             self._samples.append(sample_frame(frame, at))
-                            if len(self._samples) >= ANALYSIS_WINDOW_FRAMES:
+                            if len(self._samples) >= self.window_frames:
                                 self._frame_ready.set()
-                        next_sample = at + SAMPLE_INTERVAL_SECONDS
+                        next_sample = at + self.sample_interval
                     if now >= next_preview:
                         ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
                         if ok:
@@ -206,7 +210,8 @@ class CaptureWorker:
 class CaptureController:
     """Starts each video source only when requested and releases it on stop."""
 
-    def __init__(self, service: MonitorService, analyzer_factory: Callable[[], VisionAnalyzer]) -> None:
+    def __init__(self, service: MonitorService, analyzer_factory: Callable[[], VisionAnalyzer], settings_provider=None) -> None:
+        self.settings_provider = settings_provider
         self.service = service
         self.analyzer_factory = analyzer_factory
         self._lock = RLock()
@@ -228,7 +233,8 @@ class CaptureController:
             analyzer = self.analyzer_factory()
             self.service.set_status(camera_id, "starting", "visual-analysis")
             worker = CaptureWorker(camera, self.service, analyzer,
-                lambda error: self.service.set_status(camera_id, "error", "visual-analysis", error))
+                lambda error: self.service.set_status(camera_id, "error", "visual-analysis", error),
+                settings=self.settings_provider() if self.settings_provider else None)
             self._workers[camera_id] = worker
             worker.start()
             return self.service.status(camera_id)

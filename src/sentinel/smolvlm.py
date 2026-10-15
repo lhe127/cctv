@@ -25,7 +25,8 @@ class SmolVLM2Analyzer:
     """One lazy model per application, serialized inference, bounded input/output."""
 
     def __init__(self, model_path: str | None = None, device: str | None = None,
-                 max_new_tokens: int = 96) -> None:
+                 max_new_tokens: int = 96, settings_provider=None) -> None:
+        self.settings_provider = settings_provider
         self.model_path = model_path or os.getenv("SENTINEL_VLM_MODEL_PATH") or str(
             Path(__file__).resolve().parents[2] / "models" / "smolvlm2-500m")
         self.device = device or os.getenv("SENTINEL_VLM_DEVICE", "auto")
@@ -68,6 +69,9 @@ class SmolVLM2Analyzer:
         if not self._lock.acquire(timeout=1):
             raise ModelBusy("model is busy; waiting for the next analysis window")
         try:
+            settings = self.settings_provider() if self.settings_provider else None
+            prompt = settings.prompt if settings else PROMPT
+            max_new_tokens = settings.max_new_tokens if settings else self.max_new_tokens
             self._load()
             import torch
             from PIL import Image
@@ -79,7 +83,7 @@ class SmolVLM2Analyzer:
                     image.thumbnail((512, 512))
                     images.append(image.copy())
             is_video = len(frames) > 1
-            content = [{"type": "video" if is_video else "image"}, {"type": "text", "text": PROMPT}]
+            content = [{"type": "video" if is_video else "image"}, {"type": "text", "text": prompt}]
             text = self._processor.apply_chat_template(
                 [{"role": "user", "content": content}], add_generation_prompt=True, tokenize=False)
             if is_video:
@@ -103,7 +107,7 @@ class SmolVLM2Analyzer:
             if "pixel_values" in inputs:
                 inputs["pixel_values"] = inputs["pixel_values"].to(self._model.dtype)
             with torch.inference_mode():
-                output = self._model.generate(**inputs, do_sample=False, max_new_tokens=self.max_new_tokens,
+                output = self._model.generate(**inputs, do_sample=False, max_new_tokens=max_new_tokens,
                                               no_repeat_ngram_size=4)
             description = self._processor.batch_decode(
                 output[:, inputs["input_ids"].shape[-1]:], skip_special_tokens=True)[0].strip()

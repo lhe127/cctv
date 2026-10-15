@@ -25,7 +25,8 @@ class AlgorithmTestRunner:
     """Runs one bounded media test at a time outside the API event loop."""
 
     def __init__(self, analyzer_factory: Callable[[], VisionAnalyzer], store: JsonStateStore, output_dir: Path,
-                 inference_fps: float = 0.5) -> None:
+                 inference_fps: float = 0.5, settings_provider=None) -> None:
+        self.settings_provider = settings_provider
         self.analyzer_factory = analyzer_factory
         self.inference_fps = inference_fps
         self._pending = 0
@@ -180,7 +181,10 @@ class AlgorithmTestRunner:
             if self._stop.is_set():
                 raise RuntimeError("test cancelled during server shutdown")
             analyzer = self.analyzer_factory()
-            session = VisionSession(analyzer, self._stop)
+            settings = self.settings_provider() if self.settings_provider else None
+            session = VisionSession(analyzer, self._stop, settings=settings)
+            if settings:
+                self._save(record, inference_fps=settings.sample_fps, window_frames=settings.window_frames)
             if suffix in SUPPORTED_IMAGES:
                 output_path, detections, frames = self._process_image(analyzer, input_path, record["id"], session)
                 output_type = "image/jpeg"

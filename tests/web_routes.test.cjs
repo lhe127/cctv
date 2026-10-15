@@ -33,7 +33,8 @@ async function loadRoute(route) {
     sessionStorage: {getItem: () => 'fixture-key'},
     CSS: {escape: value => value},
     fetch: async url => {
-      assert.ok(['/api/v1/summary', '/api/v1/cameras'].includes(url), url);
+      assert.ok(['/api/v1/summary', '/api/v1/cameras', '/api/v1/settings'].includes(url), url);
+      if(url.endsWith('/settings'))return {status:200,ok:true,json:async()=>({prompt:'<safe prompt>',sample_fps:2,window_frames:8,max_new_tokens:96,preview_fps:5})};
       return {status: 200, ok: true, json: async () => url.endsWith('/cameras') ? cameras : {camera_count: 1}};
     },
   };
@@ -44,10 +45,11 @@ async function loadRoute(route) {
   return {html, mounts, cameras, element};
 }
 
-test('Robots route renders its existing disconnected state', async () => {
+test('Robots route clearly identifies the virtual patrol', async () => {
   const {html, mounts} = await loadRoute('robots');
   assert.match(html, /Robot operations/);
-  assert.match(html, /No robots connected/);
+  assert.match(html, /Simulation only/);
+  assert.match(html, /No physical robot/);
   assert.equal(mounts.length, 0);
 });
 
@@ -55,6 +57,8 @@ test('Map route mounts the renderer with camera data and updates the inspector',
   const {html, mounts, cameras, element} = await loadRoute('map');
   assert.match(html, /residential-map-canvas/);
   assert.match(html, /Site directory/);
+  assert.match(html, /Not placed/);
+  assert.match(html, /Plan coordinates/);
   assert.equal(mounts.length, 1);
   assert.equal(mounts[0].canvas, element('#residential-map-canvas'));
   assert.equal(mounts[0].options.cameras, cameras);
@@ -62,4 +66,12 @@ test('Map route mounts the renderer with camera data and updates the inspector',
     description: 'Pool area', state: 'Site overview', facts: [['Label', '<unsafe>']]});
   assert.equal(element('#map-inspector-title').textContent, 'Swimming pool');
   assert.match(element('#map-inspector-facts').innerHTML, /&lt;unsafe&gt;/);
+});
+
+test('Settings route loads escaped prompt and bounded analysis controls', async () => {
+  const {html,element}=await loadRoute('settings');
+  assert.match(html,/Administrator access/);
+  assert.match(element('#settings-editor').innerHTML,/&lt;safe prompt&gt;/);
+  assert.match(element('#settings-editor').innerHTML,/setting-sample_fps/);
+  assert.match(element('#settings-editor').innerHTML,/setting-window_frames/);
 });

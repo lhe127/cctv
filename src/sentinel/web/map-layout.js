@@ -24,11 +24,3 @@ export const FLOWERS = [
   [16, 20, '#f2c84b'], [20, 31, '#ef7199'], [48, 18, '#f0799e'], [56, 34, '#f5d44c'], [103, 17, '#f0cb42'], [142, 25, '#e96d99'],
   [20, 63, '#f3cd43'], [58, 50, '#e86e9c'], [103, 49, '#f2cc43'], [140, 69, '#e86d99'], [18, 88, '#ef729c'], [104, 89, '#efcb44'],
 ];
-
-export const CAMERA_ANCHORS = [
-  {x: 80, z: 94, angle: -Math.PI / 2}, {x: 17, z: 43, angle: 0}, {x: 143, z: 43, angle: Math.PI},
-  {x: 68, z: 49, angle: Math.PI / 2}, {x: 92, z: 49, angle: Math.PI / 2}, {x: 32, z: 13, angle: Math.PI / 2},
-  {x: 128, z: 13, angle: Math.PI / 2}, {x: 80, z: 43, angle: Math.PI / 2},
-];
-
-

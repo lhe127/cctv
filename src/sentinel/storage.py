@@ -11,7 +11,7 @@ from threading import RLock
 from typing import Any
 from uuid import uuid4
 
-from .domain import Camera, Event, Kind, Rule, Zone
+from .domain import Camera, Event, Kind, Rule, Zone, MapPosition
 
 
 def _zone_from_dict(value: dict[str, Any]) -> Zone:
@@ -39,7 +39,8 @@ def _camera_from_dict(value: dict[str, Any]) -> Camera:
     if isinstance(source, bool) or not isinstance(source, (str, int)) or (isinstance(source, int) and source < 0):
         raise ValueError("camera source must be a nonnegative webcam index or video source string")
     return Camera(value["id"], value["name"], source,
-                  tuple(_zone_from_dict(zone) for zone in value.get("zones", [])))
+                  tuple(_zone_from_dict(zone) for zone in value.get("zones", [])),
+                  MapPosition(**value["map_position"]) if value.get("map_position") else None)
 
 
 def _camera_to_dict(camera: Camera) -> dict[str, Any]:
@@ -48,6 +49,7 @@ def _camera_to_dict(camera: Camera) -> dict[str, Any]:
         "name": camera.name,
         "source": camera.source,
         "zones": [asdict(zone) for zone in camera.zones],
+        "map_position": asdict(camera.map_position) if camera.map_position else None,
     }
 
 

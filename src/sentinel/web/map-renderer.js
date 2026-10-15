@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import {OrbitControls} from './vendor/OrbitControls.js';
-import {BUILDINGS, AMENITIES, CAMERA_ANCHORS} from './map-layout.js';
+import {BUILDINGS, AMENITIES} from './map-layout.js';
 import {createMaterials} from './map-materials.js';
-import {buildSite} from './map-scene.js';
+import {buildSite} from './map-scene.js?v=coordinates-1';
 
 export function mount(canvas, {root, cameras, onSelect}) {
   let renderer;
@@ -14,7 +14,7 @@ export function mount(canvas, {root, cameras, onSelect}) {
   const scene=new THREE.Scene(); scene.background=new THREE.Color('#c9cfc9');
   const camera=new THREE.PerspectiveCamera(38,1,.5,1200);
   const controls=new OrbitControls(camera,canvas);
-  controls.target.set(80,0,55); controls.minDistance=18; controls.maxDistance=370;
+  controls.target.set(80,0,55); controls.minDistance=18; controls.maxDistance=520;
   controls.maxPolarAngle=Math.PI*.47; controls.minPolarAngle=.12;
   controls.enableDamping=false; controls.screenSpacePanning=true;
   const listeners=new AbortController();
@@ -36,18 +36,27 @@ export function mount(canvas, {root, cameras, onSelect}) {
   const pmrem=new THREE.PMREMGenerator(renderer), environment=pmrem.fromEquirectangular(skyTexture);
   scene.environment=environment.texture;scene.environmentIntensity=.35;pmrem.dispose();skyTexture.dispose();
   const {materials,textures}=createMaterials(renderer);
-  const cameraFeatures=cameras.map((item,index)=>{
-    const anchor=CAMERA_ANCHORS[index%CAMERA_ANCHORS.length];
-    return {...anchor,id:`camera-${item.id}`,label:item.name,type:'Camera',icon:'◉',state:'Planning marker',
-      description:`${item.source_label}. Illustrative marker and coverage; actual installation and field of view have not been surveyed.`,
-      facts:[['Marker',String(index+1).padStart(2,'0')],['Source',item.source_type],['Zones',item.zones.length]]};
+  const cameraFeatures=cameras.filter(item=>item.map_position).map(item=>{
+    const {x,y}=item.map_position;
+    return {x:80+x,z:55-y,id:`camera-${item.id}`,label:item.name,type:'Camera',icon:'◉',state:'Placed camera',
+      description:`${item.source_label}. Position configured in plan units; not a surveyed GPS location.`,
+      facts:[['X',x],['Y',y],['Source',item.source_type]]};
   });
   const site=buildSite(scene,materials,cameraFeatures);
-  const features=[...BUILDINGS,...AMENITIES,...cameraFeatures];
+  const robotFeature={id:'patrol-robot',label:'Patrol robot · simulation',type:'Simulation',icon:'▣',state:'Simulated patrol',x:13,z:24,
+    description:'Virtual patrol follows the perimeter road. No physical robot is connected or controlled.',facts:[['Route','Perimeter road'],['Mode','Simulation']]};
+  const features=[...BUILDINGS,...AMENITIES,...cameraFeatures,robotFeature,
+    {id:'origin',label:'(0, 0)',type:'Coordinates',icon:'+',state:'Plan origin',x:80,z:55,
+      description:'Site center. Positive X is east/right; positive Y is north/up. Plan units are not surveyed metres.',facts:[['X',0],['Y',0]]}];
   const labelLayer=document.createElement('div');labelLayer.className='map-label-layer';canvas.after(labelLayer);
   const labelNodes=new Map();
   for(const feature of features){
-    const label=document.createElement('button');label.type='button';label.className='map-place-label';label.textContent=feature.label;
+    const label=document.createElement(feature.id==='origin'?'span':'button');label.type='button';label.className='map-place-label';label.textContent=feature.label;
+    if(feature.id==='origin'){label.style.pointerEvents='none';label.style.marginLeft='32px';}
+    if(feature.type==='Camera'){
+      label.classList.add('map-camera-pin');label.title=feature.label;label.setAttribute('aria-label',feature.label);
+      label.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="m16 10 5-3v10l-5-3"/></svg>';
+    }
     label.addEventListener('click',()=>select(feature.id,true),{signal:listeners.signal});labelLayer.append(label);labelNodes.set(feature.id,label);
   }
   const selection=new THREE.Box3Helper(new THREE.Box3(),0x218775);selection.visible=false;scene.add(selection);
@@ -55,7 +64,7 @@ export function mount(canvas, {root, cameras, onSelect}) {
     const feature=features.find(item=>item.id===id);if(!feature)return;
     selected=feature;
     if(feature.type==='Camera'&&!site.cameraGroup.visible)toggleCameras(true);
-    const group=site.targets.get(id);selection.box.setFromObject(group);selection.visible=true;
+    const group=site.targets.get(id);if(group)selection.box.setFromObject(group);selection.visible=Boolean(group)&&feature.type!=='Camera';
     if(focus){
       const offset=camera.position.clone().sub(controls.target).normalize().multiplyScalar(feature.type==='Camera'?36:65);
       controls.target.set(feature.x,2,feature.z);camera.position.copy(controls.target).add(offset);controls.update();
@@ -66,13 +75,13 @@ export function mount(canvas, {root, cameras, onSelect}) {
     selected=null;selection.visible=false;
     controls.target.set(80,0,60);
     const narrow=canvas.clientWidth<550;
-    camera.position.set(80+(narrow?190:135),narrow?260:180,60+(narrow?235:163));
+    camera.position.set(80+(narrow?230:135),narrow?310:180,60+(narrow?285:163));
     controls.update();
     labelNodes.forEach(label=>label.classList.remove('selected'));
     onSelect({id:'overview',label:'Sentinel Residences',icon:'⌂',type:'Master plan',state:'Site overview',description:'Explore the residences, landscaped garden and shared amenities. Select a place for a closer architectural view.',facts:[['Homes','4'],['Amenities','3'],['Cameras',cameras.length]]});
     invalidate();
   }
-  function zoom(factor){const offset=camera.position.clone().sub(controls.target);offset.setLength(THREE.MathUtils.clamp(offset.length()/factor,18,370));camera.position.copy(controls.target).add(offset);controls.update();invalidate();}
+  function zoom(factor){const offset=camera.position.clone().sub(controls.target);offset.setLength(THREE.MathUtils.clamp(offset.length()/factor,18,520));camera.position.copy(controls.target).add(offset);controls.update();invalidate();}
   function toggleCameras(visible){
     site.cameraGroup.visible=visible;
     const button=root.querySelector('[data-map-action="cameras"]');button.classList.toggle('active',visible);button.setAttribute('aria-pressed',String(visible));
@@ -109,14 +118,22 @@ export function mount(canvas, {root, cameras, onSelect}) {
     const geometries=new Set(),mats=new Set();scene.traverse(obj=>{if(obj.geometry)geometries.add(obj.geometry);if(obj.material)(Array.isArray(obj.material)?obj.material:[obj.material]).forEach(mat=>mats.add(mat));});
     geometries.forEach(g=>g.dispose());mats.forEach(m=>{if(m.map&&!textures.includes(m.map))m.map.dispose();m.dispose();});textures.forEach(t=>t.dispose());environment.dispose();renderer.dispose();
   }
-  function render(){
+  let lastTime=0,patrolTime=0;
+  function render(time){
     if(!canvas.isConnected){dispose();return;}
+    const delta=lastTime?Math.min((time-lastTime)/1000,.1):0;lastTime=time;
+    if(!document.hidden){
+      patrolTime+=delta;site.updatePatrol(patrolTime);
+      robotFeature.x=site.robot.position.x;robotFeature.z=site.robot.position.z;
+      if(selected?.id==='patrol-robot')selection.box.setFromObject(site.robot);
+      dirty=true;
+    }
     if(dirty&&!document.hidden){
       dirty=false;renderer.render(scene,camera);
       const vector=new THREE.Vector3();
       features.forEach(feature=>{
         const label=labelNodes.get(feature.id);
-        vector.set(feature.x,feature.type==='Residence'?9:feature.id==='clubhouse'?11:6,feature.z).project(camera);
+        vector.set(feature.x,feature.type==='Camera'?.5:feature.type==='Residence'?9:feature.id==='clubhouse'?11:6,feature.z).project(camera);
         const visible=vector.z<1&&vector.z>-1&&Math.abs(vector.x)<.96&&Math.abs(vector.y)<.88&&(feature.type!=='Camera'||site.cameraGroup.visible);
         label.hidden=!visible;label.style.left=`${(vector.x*.5+.5)*100}%`;label.style.top=`${(-vector.y*.5+.5)*100}%`;
       });
