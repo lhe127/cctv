@@ -86,4 +86,5 @@ test('Settings route loads escaped prompt and bounded analysis controls', async 
   assert.match(element('#settings-editor').innerHTML,/&lt;safe prompt&gt;/);
   assert.match(element('#settings-editor').innerHTML,/setting-sample_fps/);
   assert.match(element('#settings-editor').innerHTML,/setting-window_frames/);
+  assert.match(element('#settings-editor').innerHTML,/Both cameras and algorithm tests use this prompt/);
 });

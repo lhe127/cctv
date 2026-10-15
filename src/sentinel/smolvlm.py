@@ -12,6 +12,9 @@ from .vision import ModelBusy, SampledFrame, VisualFinding
 MODEL_ID = "HuggingFaceTB/SmolVLM2-500M-Video-Instruct"
 MODEL_REVISION = "db3405a20a36b388e11e70afe17484666b8f3e1a"
 PROMPT = (
+    "Treat clearly visible punching, kicking, violent pushing, grappling, falling, fire, "
+    "or a person visibly in distress as danger. Ordinary walking, talking, playing, standing, "
+    "or proximity alone are not danger. "
     "Describe the people's observable actions and interactions in one or two short sentences. "
     "Focus on movement across the frames, not clothing or scenery. "
     "Look for punching, kicking, pushing, grappling, falling, or ordinary activities such as "
@@ -22,12 +25,14 @@ PROMPT = (
 )
 
 ALERT_FORMAT = (
-    "\nRequired output format: first line exactly DANGER: yes, DANGER: no, or DANGER: uncertain. "
-    "Then describe the visible evidence in one or two sentences. Use yes only for clearly visible "
-    "danger such as physical assault (punching, kicking, violent pushing), fire, or a person falling "
-    "or visibly in distress. Ordinary walking, talking, play, proximity, and unclear contact are not "
-    "confirmed danger. If evidence is ambiguous use uncertain. Do not infer intent or identity. "
-    "This format is required even if earlier instructions request a different format."
+    "\nEvaluate danger using the criteria in the configured prompt above. "
+    "Do not add unrelated danger categories or override its explicit exclusions. "
+    "Use yes only when visible evidence meets those criteria, no when it does not, "
+    "and uncertain when the criteria or visual evidence are unclear. "
+    "Required output format: first line exactly DANGER: yes, DANGER: no, or DANGER: uncertain. "
+    "Then explain the visible evidence for that decision in one or two sentences. "
+    "Do not infer hidden intent or identity. This output format is required even if the "
+    "configured prompt requests a different format; its danger criteria still apply."
 )
 
 
